@@ -7,6 +7,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SEMVER_JS="${SCRIPT_DIR}/lib/godot-semver.mjs"
 REQUESTED="${1:-${GODOT_VERSION:?GODOT_VERSION required}}"
+# shellcheck source=lib/pgos-callback.sh
+source "${SCRIPT_DIR}/lib/pgos-callback.sh"
 
 if [[ ! -f "$SEMVER_JS" ]]; then
   echo "missing ${SEMVER_JS}" >&2
@@ -21,14 +23,16 @@ fail_e006() {
   local detail="$1"
   echo "E006 EXPORT_TEMPLATE_MISMATCH: ${detail}" >&2
   if [[ -n "${CALLBACK_TOKEN:-}" && -n "${PGOS_BASE_URL:-}" && -n "${JOB_ID:-}" ]]; then
-    # Escape detail for JSON
-    local esc
-    esc=$(node -e "console.log(JSON.stringify(process.argv[1]))" "$detail")
-    curl -sS -X PATCH "${PGOS_BASE_URL}/api/v1/jobs/${JOB_ID}/status" \
-      -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
-      -H "Content-Type: application/json" \
-      -d "{\"status\":\"VALIDATION_FAILED\",\"errorCode\":\"E006\",\"errorDetail\":${esc}}" \
-      || true
+    local payload
+    payload="$(DETAIL="$detail" node -e '
+      process.stdout.write(JSON.stringify({
+        status: "VALIDATION_FAILED",
+        errorCode: "E006",
+        errorDetail: process.env.DETAIL || "",
+      }));
+    ')"
+    # M-06: validated PATCH; auth failures must not be silent
+    pgos_patch_job_status "$payload" || echo "verify-godot: status PATCH failed (HTTP)" >&2
   fi
   exit 1
 }

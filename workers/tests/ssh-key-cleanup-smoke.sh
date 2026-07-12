@@ -67,4 +67,30 @@ fi
 pgos_cleanup_ssh_key
 pgos_assert_ssh_key_absent
 
+# C-03 regression: command-substitution subshells must not install a second EXIT
+# trap that secure-deletes the key while the parent shell still needs restore/export.
+export SSH_PRIVATE_KEY_PEM="-----BEGIN FAKE PRIVATE KEY-----
+SMOKE_SUBSHELL_KEY
+-----END FAKE PRIVATE KEY-----"
+pgos_materialize_ssh_key
+if [[ ! -f "$KEY" ]]; then
+  echo "FAIL: key missing before subshell trap check" >&2
+  exit 1
+fi
+export PGOS_SSH_KEEP_KEY=0
+pgos_register_ssh_key_cleanup
+# Simulate pgos_ssh_opts inside code="$(run_reimport)" — must not wipe key on subshell EXIT
+(
+  pgos_register_ssh_key_cleanup
+  pgos_ssh_opts >/dev/null 2>&1 || true
+  exit 0
+)
+if [[ ! -f "$KEY" ]]; then
+  echo "FAIL: subshell EXIT deleted ephemeral key (breaks C-03 restore after reimport)" >&2
+  exit 1
+fi
+export PGOS_SSH_KEEP_KEY=0
+pgos_cleanup_ssh_key
+pgos_assert_ssh_key_absent
+
 echo "OK: H-11 ephemeral SSH key cleanup smoke passed"

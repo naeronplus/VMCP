@@ -73,7 +73,17 @@ pgos_materialize_ssh_key() {
 
 # Install trap that cleans key/known_hosts unless PGOS_SSH_KEEP_KEY=1.
 # Safe to call multiple times (idempotent).
+#
+# Important (C-03 rollback): install the trap only once per *main* shell ($$).
+# Bash command substitutions run in subshells where $$ still equals the parent
+# PID; re-installing EXIT traps in those subshells would delete the ephemeral
+# key when the subshell exits (e.g. code="$(run_reimport)"), breaking later
+# restore/snapshot-export verbs in the same worker step.
 pgos_register_ssh_key_cleanup() {
+  if [[ "${_PGOS_SSH_CLEANUP_TRAP_SH:-}" == "$$" ]]; then
+    return 0
+  fi
+  _PGOS_SSH_CLEANUP_TRAP_SH=$$
   # shellcheck disable=SC2317
   _pgos_ssh_key_trap() {
     # Intermediate scripts (atomic-commit success → post-commit) may set KEEP=1

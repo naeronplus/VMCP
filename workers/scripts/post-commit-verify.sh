@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Post-commit reimport; rollback from S3 snapshot on failure (§4.1 step 8)
 # Cross-machine: reimport + restore via commit-agent ForcedCommand verbs (C-02, C-03).
+# M-06: status PATCH via pgos_callback_patch
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -8,6 +9,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/pgos-s3.sh"
 # shellcheck source=lib/pgos-remote.sh
 source "${SCRIPT_DIR}/lib/pgos-remote.sh"
+# shellcheck source=lib/pgos-callback.sh
+source "${SCRIPT_DIR}/lib/pgos-callback.sh"
 
 TARGET_ROOT="${TARGET_PROJECT_ROOT:-/var/godot/projects/${PROJECT_ID}}"
 timeout="${REIMPORT_TIMEOUT_SEC:-300}"
@@ -23,37 +26,35 @@ PGOS_SSH_KEEP_KEY=0
 export PGOS_SSH_KEEP_KEY
 pgos_register_ssh_key_cleanup
 
-curl -sS -X PATCH "${PGOS_BASE_URL}/api/v1/jobs/${JOB_ID}/status" \
-  -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
-  -H "Content-Type: application/json" \
-  -d '{"status":"POST_COMMIT_VERIFY"}'
+pgos_patch_job_status '{"status":"POST_COMMIT_VERIFY"}'
 
+# Sets REIMPORT_EXIT_CODE (avoids command-substitution subshells that would
+# inherit EXIT traps and secure-delete the ephemeral SSH key mid-pipeline).
 run_reimport() {
   local logf="/tmp/post_reimport_${JOB_ID}.log"
+  REIMPORT_EXIT_CODE=1
   if [[ "${COMMIT_STRATEGY}" == "cross-machine" ]]; then
     # Default-on remote verify. Break-glass only: PGOS_REMOTE_VERIFY=0 (unsafe — documents wrong FS).
     if [[ "${PGOS_REMOTE_VERIFY:-1}" == "0" ]]; then
       echo "WARNING: PGOS_REMOTE_VERIFY=0 — verifying on runner filesystem (unsafe for cross-machine)" >&2
       set +e
       timeout "$timeout" godot --headless --editor --quit --path "$TARGET_ROOT" >"$logf" 2>&1
-      local code=$?
+      REIMPORT_EXIT_CODE=$?
       set -e
-      echo "$code"
       return 0
     fi
     : "${TARGET_HOST:?TARGET_HOST required for cross-machine reimport}"
     set +e
     pgos_ssh_agent "reimport ${TARGET_ROOT} ${timeout}" >"$logf" 2>&1
-    local code=$?
+    REIMPORT_EXIT_CODE=$?
     set -e
-    echo "$code"
     return 0
   fi
   set +e
   timeout "$timeout" godot --headless --editor --quit --path "$TARGET_ROOT" >"$logf" 2>&1
-  local code=$?
+  REIMPORT_EXIT_CODE=$?
   set -e
-  echo "$code"
+  return 0
 }
 
 do_rollback() {
@@ -77,11 +78,12 @@ do_rollback() {
       if pgos_ssh_agent "restore ${TARGET_ROOT} ${BACKUP}"; then
         echo "Remote restored from host backup ${BACKUP}"
         restored=1
+        detail="post-commit reimport failed; restored host backup"
       fi
     fi
     if [[ $restored -eq 0 ]]; then
       detail="post-commit reimport failed; remote restore also failed"
-    else
+    elif [[ "$detail" == "post-commit reimport failed" ]]; then
       detail="post-commit reimport failed; restored remote snapshot"
     fi
   else
@@ -112,22 +114,25 @@ do_rollback() {
     fi
   fi
 
-  # Escape detail for JSON (minimal)
-  detail="${detail//\"/\\\"}"
-  curl -sS -X PATCH "${PGOS_BASE_URL}/api/v1/jobs/${JOB_ID}/status" \
-    -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d "{\"status\":\"ROLLBACK\",\"errorCode\":\"E002\",\"errorDetail\":\"${detail}\"}"
+  # Escape detail for JSON via node (safe quoting)
+  local payload
+  payload="$(DETAIL="$detail" node -e '
+    const d = process.env.DETAIL || "";
+    process.stdout.write(JSON.stringify({
+      status: "ROLLBACK",
+      errorCode: "E002",
+      errorDetail: d,
+    }));
+  ')"
+  pgos_patch_job_status "$payload"
 }
 
 while true; do
-  code="$(run_reimport)"
+  run_reimport
+  code="${REIMPORT_EXIT_CODE:-1}"
   logf="/tmp/post_reimport_${JOB_ID}.log"
   if [[ "$code" -eq 0 ]] && ! grep -qi 'uid://.*error\|Failed to load resource' "$logf" 2>/dev/null; then
-    curl -sS -X PATCH "${PGOS_BASE_URL}/api/v1/jobs/${JOB_ID}/status" \
-      -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
-      -H "Content-Type: application/json" \
-      -d '{"status":"COMPLETED"}'
+    pgos_patch_job_status '{"status":"COMPLETED"}'
     exit 0
   fi
   if [[ $attempt -ge $max ]]; then

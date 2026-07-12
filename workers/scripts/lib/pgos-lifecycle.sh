@@ -15,6 +15,16 @@ pgos_start_heartbeat() {
 pgos_stop_heartbeat() {
   if [[ -n "${PGOS_HEARTBEAT_PID:-}" ]]; then
     kill "${PGOS_HEARTBEAT_PID}" 2>/dev/null || true
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 5 wait "${PGOS_HEARTBEAT_PID}" 2>/dev/null || true
+    else
+      local i=0
+      while kill -0 "${PGOS_HEARTBEAT_PID}" 2>/dev/null && [[ "$i" -lt 50 ]]; do
+        sleep 0.1
+        i=$((i + 1))
+      done
+    fi
+    kill -9 "${PGOS_HEARTBEAT_PID}" 2>/dev/null || true
     wait "${PGOS_HEARTBEAT_PID}" 2>/dev/null || true
     PGOS_HEARTBEAT_PID=""
   fi

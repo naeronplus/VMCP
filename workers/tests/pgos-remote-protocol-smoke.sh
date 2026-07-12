@@ -78,6 +78,27 @@ fi
 pgos_ssh_agent "reimport /var/godot/projects/p1 300" >/dev/null
 pgos_ssh_agent_stdin "restore /var/godot/projects/p1" </dev/null
 pgos_ssh_agent_stdin "stage-receive /tmp/staging-x abc" </dev/null
+pgos_ssh_agent "snapshot-export /var/godot/projects/p1" >/dev/null
+# CM-LOCK-01: stat-lock probes target project.godot.lock
+pgos_ssh_agent "stat-lock /var/godot/projects/p1" >/dev/null
+
+# Contract: atomic-commit.sh wait_for_editor_lock_remote must call stat-lock (not runner FS).
+if ! grep -q 'wait_for_editor_lock_remote' "${ROOT}/workers/scripts/atomic-commit.sh"; then
+  echo "FAIL: atomic-commit.sh missing wait_for_editor_lock_remote (CM-LOCK-01)" >&2
+  exit 1
+fi
+if ! grep -q 'stat-lock' "${ROOT}/workers/scripts/atomic-commit.sh"; then
+  echo "FAIL: atomic-commit.sh does not invoke stat-lock (CM-LOCK-01)" >&2
+  exit 1
+fi
+# Must not only wait on runner-local lock in the cross-machine branch.
+if ! grep -A2 'Cross-machine' "${ROOT}/workers/scripts/atomic-commit.sh" | grep -q 'stat-lock\|wait_for_editor_lock_remote'; then
+  # Cross-machine block must call remote wait helper
+  if ! grep -A30 'COMMIT_STRATEGY.*cross-machine\|else' "${ROOT}/workers/scripts/atomic-commit.sh" | grep -q 'wait_for_editor_lock_remote'; then
+    echo "FAIL: cross-machine path missing wait_for_editor_lock_remote" >&2
+    exit 1
+  fi
+fi
 
 if ! grep -q 'SSH_AGENT reimport' "$LOG"; then
   echo "FAIL: reimport verb not invoked"
@@ -94,7 +115,17 @@ if ! grep -q 'SSH_AGENT_STDIN stage-receive' "$LOG"; then
   cat "$LOG"
   exit 1
 fi
+if ! grep -q 'SSH_AGENT snapshot-export' "$LOG"; then
+  echo "FAIL: snapshot-export verb not invoked (C-03)"
+  cat "$LOG"
+  exit 1
+fi
+if ! grep -q 'SSH_AGENT stat-lock' "$LOG"; then
+  echo "FAIL: stat-lock verb not invoked (CM-LOCK-01)"
+  cat "$LOG"
+  exit 1
+fi
 
 rm -f "$LOG"
 rm -rf "$SHIM"
-echo "OK: cross-machine ForcedCommand verbs selected"
+echo "OK: cross-machine ForcedCommand verbs selected (incl. snapshot-export, stat-lock)"
