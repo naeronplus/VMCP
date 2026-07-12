@@ -80,6 +80,62 @@ func TestHandleArgsRejectsUnknownVerb(t *testing.T) {
 	}
 }
 
+// CM-LOCK-01: stat-lock reports locked|unlocked for project.godot.lock on target FS.
+func TestStatLock_UnlockedWhenMissing(t *testing.T) {
+	root := t.TempDir()
+	a := testAgent(t, root)
+	proj := filepath.Join(root, "game")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	code, msg := a.handleArgs([]string{"stat-lock", proj})
+	if code != 0 {
+		t.Fatalf("code=%d msg=%s", code, msg)
+	}
+	if msg != "unlocked" {
+		t.Fatalf("want unlocked, got %q", msg)
+	}
+}
+
+func TestStatLock_LockedWhenPresent(t *testing.T) {
+	root := t.TempDir()
+	a := testAgent(t, root)
+	proj := filepath.Join(root, "game")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lock := filepath.Join(proj, "project.godot.lock")
+	if err := os.WriteFile(lock, []byte("editor"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, msg := a.handleArgs([]string{"stat-lock", proj})
+	if code != 0 {
+		t.Fatalf("code=%d msg=%s", code, msg)
+	}
+	if msg != "locked" {
+		t.Fatalf("want locked, got %q", msg)
+	}
+}
+
+func TestStatLock_TraversalRejected(t *testing.T) {
+	a := testAgent(t, t.TempDir())
+	code, msg := a.handleArgs([]string{"stat-lock", filepath.Join(a.cfg.ProjectRoot, "..", "etc")})
+	if code == 0 {
+		t.Fatal("expected traversal reject")
+	}
+	if msg == "locked" || msg == "unlocked" {
+		t.Fatalf("must not report lock status for escaped path: %s", msg)
+	}
+}
+
+func TestStatLock_Usage(t *testing.T) {
+	a := testAgent(t, t.TempDir())
+	code, msg := a.handleArgs([]string{"stat-lock"})
+	if code == 0 || !strings.Contains(msg, "usage: stat-lock") {
+		t.Fatalf("usage: code=%d msg=%s", code, msg)
+	}
+}
+
 func TestStageReceiveAndPathTraversal(t *testing.T) {
 	a := testAgent(t, t.TempDir())
 	// traversal dest rejected
@@ -218,6 +274,211 @@ func TestReimportRejectsTraversal(t *testing.T) {
 	if !strings.Contains(msg, "outside") && !strings.Contains(msg, "traversal") {
 		t.Fatalf("msg=%s", msg)
 	}
+}
+
+func TestSnapshotExport_HappyPathStableChecksum(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "p1")
+	if err := os.MkdirAll(filepath.Join(proj, "scenes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "project.godot"), []byte("config_version=5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "scenes", "main.tscn"), []byte("[gd_scene]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// .godot cache must be excluded
+	if err := os.MkdirAll(filepath.Join(proj, ".godot", "imported"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, ".godot", "imported", "x"), []byte("cache"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	a := testAgent(t, filepath.Join(root, "projects"))
+	sum1 := runSnapshotExport(t, a, proj)
+	sum2 := runSnapshotExport(t, a, proj)
+	if sum1 != sum2 {
+		t.Fatalf("checksum not stable: %s vs %s", sum1, sum2)
+	}
+	// Archive must not contain .godot/ cache path entries (exclusion list).
+	// Note: "project.godot" is a valid filename — only path segments named ".godot" are excluded.
+	names := listTarGzNames(t, lastSnapshotBytes)
+	if len(names) == 0 {
+		t.Fatal("expected archive entries")
+	}
+	var sawProject, sawScene bool
+	for _, n := range names {
+		for _, seg := range strings.Split(n, "/") {
+			if seg == ".godot" {
+				t.Fatalf("archive includes .godot path segment: %v", names)
+			}
+		}
+		if n == "project.godot" {
+			sawProject = true
+		}
+		if n == "scenes/main.tscn" || strings.HasSuffix(n, "/main.tscn") {
+			sawScene = true
+		}
+	}
+	if !sawProject || !sawScene {
+		t.Fatalf("expected project.godot + main.tscn in archive, got %v", names)
+	}
+}
+
+func TestSnapshotExport_MissingPath(t *testing.T) {
+	root := t.TempDir()
+	a := testAgent(t, root)
+	code, msg := a.handleArgs([]string{"snapshot-export", filepath.Join(root, "does-not-exist")})
+	if code == 0 {
+		t.Fatal("expected fail for missing path")
+	}
+	if !strings.Contains(msg, "missing") {
+		t.Fatalf("msg=%s", msg)
+	}
+}
+
+func TestSnapshotExport_TraversalRejected(t *testing.T) {
+	a := testAgent(t, t.TempDir())
+	code, msg := a.handleArgs([]string{"snapshot-export", filepath.Join(a.cfg.ProjectRoot, "..", "etc")})
+	if code == 0 {
+		t.Fatal("expected traversal reject")
+	}
+	if !strings.Contains(msg, "outside") && !strings.Contains(msg, "traversal") {
+		t.Fatalf("msg=%s", msg)
+	}
+}
+
+func TestSnapshotExport_UsageAndNotDirectory(t *testing.T) {
+	root := t.TempDir()
+	a := testAgent(t, root)
+	code, msg := a.handleArgs([]string{"snapshot-export"})
+	if code == 0 || !strings.Contains(msg, "usage: snapshot-export") {
+		t.Fatalf("usage: code=%d msg=%s", code, msg)
+	}
+	filePath := filepath.Join(root, "not-a-dir")
+	if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	code, msg = a.handleArgs([]string{"snapshot-export", filePath})
+	if code == 0 {
+		t.Fatal("expected fail for non-directory")
+	}
+	if !strings.Contains(msg, "not a directory") {
+		t.Fatalf("msg=%s", msg)
+	}
+}
+
+func TestSnapshotExport_RestoreRoundTrip(t *testing.T) {
+	// C-03 primary path: snapshot-export stdout archive must be restorable via restore stdin.
+	root := t.TempDir()
+	proj := filepath.Join(root, "live")
+	if err := os.MkdirAll(filepath.Join(proj, "scenes"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "project.godot"), []byte("config_version=5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "scenes", "main.tscn"), []byte("[gd_scene load_steps=1]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := testAgent(t, root)
+	_ = runSnapshotExport(t, a, proj)
+	archive := lastSnapshotBytes
+	if len(archive) < 2 || archive[0] != 0x1f || archive[1] != 0x8b {
+		t.Fatalf("expected gzip magic, got %d bytes", len(archive))
+	}
+
+	// Mutate live tree, then restore from archive
+	if err := os.WriteFile(filepath.Join(proj, "project.godot"), []byte("corrupted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "evil.txt"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldIn := os.Stdin
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdin = r
+	go func() {
+		_, _ = w.Write(archive)
+		_ = w.Close()
+	}()
+	code, msg := a.handleArgs([]string{"restore", proj})
+	os.Stdin = oldIn
+	_ = r.Close()
+	if code != 0 {
+		t.Fatalf("restore failed: %s", msg)
+	}
+	body, err := os.ReadFile(filepath.Join(proj, "project.godot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "config_version=5\n" {
+		t.Fatalf("project.godot not restored: %q", body)
+	}
+	if _, err := os.Stat(filepath.Join(proj, "evil.txt")); !os.IsNotExist(err) {
+		t.Fatal("restore should replace tree (evil.txt should be gone)")
+	}
+	scene, err := os.ReadFile(filepath.Join(proj, "scenes", "main.tscn"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(scene), "gd_scene") {
+		t.Fatalf("scene not restored: %q", scene)
+	}
+}
+
+var lastSnapshotBytes []byte
+
+func runSnapshotExport(t *testing.T, a *Agent, projectPath string) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	code, msg := a.handleArgs([]string{"snapshot-export", projectPath})
+	_ = w.Close()
+	os.Stdout = old
+	if code != 0 {
+		t.Fatalf("snapshot-export failed: %s", msg)
+	}
+	raw, err := io.ReadAll(r)
+	_ = r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastSnapshotBytes = raw
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+func listTarGzNames(t *testing.T, raw []byte) []string {
+	t.Helper()
+	gz, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	var names []string
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, hdr.Name)
+	}
+	return names
 }
 
 func TestValidateTokenHTTPMock(t *testing.T) {

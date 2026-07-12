@@ -18,18 +18,39 @@ command="commit-agent-once",no-port-forwarding,no-X11-forwarding,no-agent-forwar
 | `commit` | — | `<token> <source> <target> [lockKey lockOwner [nonce]]` | Fenced atomic rename; retains `target.bak-{jobId}` |
 | `reimport` | — | `<project_path> <timeout_sec>` | Headless Godot reimport (`GODOT_BIN`, default `godot`) |
 | `restore` | tar.gz **or** — | `<target_dir> [backup_path]` | Replace target from stdin archive or local backup |
+| `snapshot-export` | — | `<project_path>` | Stream **tar.gz of live project tree to stdout** (C-03 primary S3 rollback). Excludes `.godot/`. Missing path → exit 1. Status only on stderr (binary stdout). |
+| `stat-lock` | — | `<project_path>` | **CM-LOCK-01:** print `locked` or `unlocked` for `project.godot.lock` on the target FS (workers wait before commit). |
 
 Unknown verbs are rejected (no shell).
 
-## Install
+### Backup hierarchy (cross-machine)
+
+| Priority | Source | When |
+|----------|--------|------|
+| 1 (primary) | S3 pre-commit archive from **target** via `snapshot-export` | Always for cross-machine (`PRESIGN_SNAPSHOT_PUT` required; missing → `COMMIT_FAILED` E004) |
+| 2 (secondary) | `target.bak-{jobId}` on host | After commit (retained by `commit`) |
+| 3 (tertiary) | Staging tarball | **Not** a rollback source |
+
+## Install (DEP-02)
+
+One-command install (builds + installs binary + ForcedCommand wrapper):
+
+```bash
+# From monorepo root (requires Go 1.22+):
+sudo bash packages/commit-agent/scripts/install.sh
+
+# Custom path:
+sudo COMMIT_AGENT_BIN=/opt/pgos/bin/commit-agent bash packages/commit-agent/scripts/install.sh
+```
+
+`commit-agent-once` always execs `${COMMIT_AGENT_BIN:-/usr/local/bin/commit-agent}`.
+
+Manual:
 
 ```bash
 cd packages/commit-agent
 go build -o /usr/local/bin/commit-agent ./cmd/agent
 install -m 0755 bin/commit-agent-once /usr/local/bin/commit-agent-once
-# wrapper:
-#   #!/usr/bin/env bash
-#   exec /usr/local/bin/commit-agent -once "${SSH_ORIGINAL_COMMAND:-$*}"
 ```
 
 ### Target host requirements

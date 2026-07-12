@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# SSH ForcedCommand entrypoint for PGOS cross-machine verbs.
+# SSH ForcedCommand entrypoint for PGOS cross-machine verbs (DEP-02).
 # Install next to commit-agent binary, typically /usr/local/bin/commit-agent-once
 set -euo pipefail
-exec /usr/local/bin/commit-agent -once "${SSH_ORIGINAL_COMMAND:-$*}"
+# COMMIT_AGENT_BIN overrides install path (packages/commit-agent/scripts/install.sh).
+exec "${COMMIT_AGENT_BIN:-/usr/local/bin/commit-agent}" -once "${SSH_ORIGINAL_COMMAND:-$*}"
