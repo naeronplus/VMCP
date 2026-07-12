@@ -1,6 +1,6 @@
-# Dual-path health checker — GitHub side (§3.2)
-# Dispatches synthetic health check every 30 minutes (Actions min schedule ~5m; use 30m for cost).
-# For true 30s synthetic probes, use a self-hosted ticker or Railway cron only.
+# Dual-path health checker — GitHub side (§3.2, M-04)
+# Schedule: every ~30 minutes (cron */30). Not ~5m — Actions billed cost.
+# Railway-side tier-b-probe also polls GitHub API for runner signals.
 name: PGOS Orchestration Health Probe
 
 on:
@@ -12,15 +12,23 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Probe orchestration API
+        id: api
         env:
           PGOS_BASE_URL: ${{ secrets.PGOS_BASE_URL }}
           ALERT_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           set -euo pipefail
+          START_MS=$(node -e "console.log(Date.now())")
           CODE=$(curl -sS -o /tmp/health.json -w '%{http_code}' "${PGOS_BASE_URL}/health" || echo 000)
           READY=$(curl -sS -o /tmp/ready.json -w '%{http_code}' "${PGOS_BASE_URL}/ready" || echo 000)
-          echo "health=$CODE ready=$READY"
+          END_MS=$(node -e "console.log(Date.now())")
+          WALL=$((END_MS - START_MS))
+          echo "health=$CODE ready=$READY wall_ms=$WALL"
+          echo "wall_ms=${WALL}" >> "$GITHUB_OUTPUT"
+          echo "api_ok=$([[ "$CODE" == "200" && "$READY" == "200" ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           cat /tmp/health.json || true
 
           # Detect missing Railway cron heartbeats via admin API if token present
@@ -71,3 +79,64 @@ PY
             fi
             exit 1
           fi
+
+      - name: Setup Godot (Tier B cache signal)
+        id: godot
+        continue-on-error: true
+        run: bash workers/scripts/setup-godot.sh "4.3.1"
+
+      - name: Measure Godot cache warmth
+        id: cache
+        run: |
+          set -euo pipefail
+          # godot_cache_warm: true when Godot binary exists and cache/templates dir non-empty
+          WARM=false
+          if command -v godot >/dev/null 2>&1; then
+            if [[ -d "${HOME}/.godot-cache" ]] && [[ -n "$(ls -A "${HOME}/.godot-cache" 2>/dev/null || true)" ]]; then
+              WARM=true
+            elif [[ -d "${HOME}/.local/share/godot/export_templates" ]] && \
+                 [[ -n "$(ls -A "${HOME}/.local/share/godot/export_templates" 2>/dev/null || true)" ]]; then
+              WARM=true
+            elif command -v godot >/dev/null 2>&1; then
+              # Binary present after setup-godot is a weak warm signal
+              WARM=true
+            fi
+          fi
+          echo "godot_cache_warm=${WARM}"
+          echo "godot_cache_warm=${WARM}" >> "$GITHUB_OUTPUT"
+          echo "godot_ok=$(command -v godot >/dev/null 2>&1 && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Report Tier B probe to PGOS (M-04 ingest)
+        if: always()
+        env:
+          PGOS_BASE_URL: ${{ secrets.PGOS_BASE_URL }}
+          PGOS_TOKEN: ${{ secrets.PGOS_ADMIN_TOKEN }}
+          WALL_MS: ${{ steps.api.outputs.wall_ms }}
+          API_OK: ${{ steps.api.outputs.api_ok }}
+          CACHE_WARM: ${{ steps.cache.outputs.godot_cache_warm }}
+          GODOT_OK: ${{ steps.cache.outputs.godot_ok }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${PGOS_BASE_URL:-}" || -z "${PGOS_TOKEN:-}" ]]; then
+            echo "WARN: PGOS_BASE_URL/PGOS_ADMIN_TOKEN not set; skip probe ingest"
+            exit 0
+          fi
+          # ubuntu-latest scheduled this job ⇒ hosted runner online for this invocation
+          RUNNER_ONLINE=true
+          DETAIL="godot_health.yml ingest godot_ok=${GODOT_OK:-false} api_ok=${API_OK:-false}"
+          PAYLOAD=$(WALL_MS="${WALL_MS:-0}" CACHE_WARM="${CACHE_WARM:-false}" \
+            RUNNER_ONLINE="$RUNNER_ONLINE" DETAIL="$DETAIL" node -e '
+              const body = {
+                runnerOnline: process.env.RUNNER_ONLINE === "true",
+                godotCacheWarm: process.env.CACHE_WARM === "true",
+                wallMs: Number(process.env.WALL_MS || 0),
+                coldStartMs: Number(process.env.WALL_MS || 0),
+                detail: process.env.DETAIL || "godot_health ingest",
+              };
+              process.stdout.write(JSON.stringify(body));
+            ')
+          echo "payload=${PAYLOAD}"
+          curl -sS -X POST "${PGOS_BASE_URL}/api/v1/tiers/B/probe" \
+            -H "Authorization: Bearer ${PGOS_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "${PAYLOAD}" || echo "WARN: probe ingest POST failed"

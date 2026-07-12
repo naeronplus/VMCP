@@ -67,12 +67,14 @@ jobs:
       - name: Verify exact Godot version + export templates (E006)
         run: bash workers/scripts/verify-godot.sh "${{ inputs.godotVersion }}"
 
+      # M-05: same retry/auth semantics as lifecycle scripts (401/403 fail job early).
+      # resolve-secrets.sh above must have set CALLBACK_TOKEN.
       - name: Report STAGING
         run: |
-          curl -sS -X PATCH "${PGOS_BASE_URL}/api/v1/jobs/${JOB_ID}/status" \
-            -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d '{"status":"STAGING"}'
+          set -euo pipefail
+          # shellcheck source=workers/scripts/lib/pgos-callback.sh
+          source workers/scripts/lib/pgos-callback.sh
+          pgos_patch_job_status '{"status":"STAGING"}'
 
       # C-01: single long step owns heartbeat PID through generate + commit + verify
       - name: Execute job pipeline

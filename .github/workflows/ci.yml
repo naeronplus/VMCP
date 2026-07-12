@@ -40,23 +40,59 @@ jobs:
       - name: Verify workflow mirrors
         run: node scripts/verify-workflow-mirrors.mjs
 
-  shellcheck:
+  worker-smokes:
+    name: Worker smokes (TEST-03)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Run shellcheck on worker scripts
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
           shellcheck workers/scripts/*.sh workers/scripts/lib/*.sh
 
-      - name: Worker S3 helper smoke test
+      # TEST-03: 9/9 worker bash smokes (plan §8.1 + §12)
+      - name: '[1/9] pgos-s3-smoke.sh'
         run: bash workers/tests/pgos-s3-smoke.sh
+
+      - name: '[2/9] ssh-key-cleanup-smoke.sh (H-11)'
+        run: bash workers/tests/ssh-key-cleanup-smoke.sh
+
+      - name: '[3/9] validate-node-paths-smoke.sh (M-11)'
+        run: bash workers/tests/validate-node-paths-smoke.sh
+
+      - name: '[4/9] perf-profile-smoke.sh (M-12)'
+        run: bash workers/tests/perf-profile-smoke.sh
+
+      - name: '[5/9] pgos-callback-smoke.sh (M-05/M-06)'
+        run: bash workers/tests/pgos-callback-smoke.sh
+
+      - name: '[6/9] heartbeat-lifecycle-smoke.sh (C-01)'
+        run: bash workers/tests/heartbeat-lifecycle-smoke.sh
+
+      - name: '[7/9] pgos-remote-protocol-smoke.sh (C-00)'
+        run: bash workers/tests/pgos-remote-protocol-smoke.sh
+
+      - name: '[8/9] parity-canary-smoke.sh (H-12)'
+        run: bash workers/tests/parity-canary-smoke.sh
+
+      - name: '[9/9] resolve-secrets-mask-smoke.sh (M-07/L-12)'
+        run: bash workers/tests/resolve-secrets-mask-smoke.sh
 
       - name: Godot semver / template validation unit tests (H-09/H-10)
         run: node --test workers/tests/godot-semver.test.mjs
 
-      - name: Ephemeral SSH key cleanup smoke (H-11)
-        run: bash workers/tests/ssh-key-cleanup-smoke.sh
+      - name: C-03 remote pre-commit snapshot-export smoke
+        run: bash workers/tests/snapshot-export-smoke.sh
+
+      - name: C-03 S3-primary rollback smoke
+        run: bash workers/tests/snapshot-rollback-smoke.sh
+
+      - name: TEST-01 scenario 6 host-backup rollback smoke
+        run: bash workers/tests/host-backup-rollback-smoke.sh
+
+      - name: TEST-01 scenario 7 editor-lock cross-machine smoke
+        run: bash workers/tests/editor-lock-cross-machine-smoke.sh
 
   commit-agent:
     runs-on: ubuntu-latest
@@ -71,6 +107,17 @@ jobs:
         working-directory: packages/commit-agent
         run: go test ./...
 
+      - name: Test target-provisioner (DEP-01 / SEC-01 TLS)
+        working-directory: packages/target-provisioner
+        run: go test ./...
+
       - name: Build commit-agent
         working-directory: packages/commit-agent
         run: go build -o /tmp/commit-agent ./cmd/agent
+
+      - name: Upload commit-agent artifact (DEP-02)
+        uses: actions/upload-artifact@v4
+        with:
+          name: commit-agent-linux-amd64
+          path: /tmp/commit-agent
+          if-no-files-found: error

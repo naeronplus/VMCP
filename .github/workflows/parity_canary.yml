@@ -1,4 +1,6 @@
 # Hourly Tier A vs Tier B parity canary (§6.2, §11.1)
+# H-12: Godot reimport failures surface as parity fail with reason reimport_failed_*
+# H-13: Missing Tier A artifact → skipped (tier_a_unavailable), exit 0, no false E010
 name: Tier Parity Canary
 
 on:
@@ -24,11 +26,15 @@ jobs:
         run: bash workers/scripts/parity-canary.sh
         env:
           TIER: ${{ matrix.tier }}
+        # H-12: non-zero exit is intentional when reimport fails.
+        # Artifacts (including reimport_status.txt) are still uploaded below.
       - name: Upload artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: parity-${{ matrix.tier }}
           path: parity-out/
+          if-no-files-found: warn
 
   compare:
     needs: parity
@@ -44,20 +50,111 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           set -euo pipefail
-          A=$(find artifacts -name 'checksum.txt' | grep -i '/parity-A/' | head -1 || true)
-          B=$(find artifacts -name 'checksum.txt' | grep -i '/parity-B/' | head -1 || true)
-          CA=$(cat "$A" 2>/dev/null || echo missing-a)
-          CB=$(cat "$B" 2>/dev/null || echo missing-b)
-          DA=$(cat "$(dirname "$A")/duration.txt" 2>/dev/null || echo 0)
-          DB=$(cat "$(dirname "$B")/duration.txt" 2>/dev/null || echo 0)
-          curl -sS -X POST "${PGOS_BASE_URL}/api/v1/parity" \
-            -H "Authorization: Bearer ${PGOS_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"tierAChecksum\":\"${CA}\",\"tierBChecksum\":\"${CB}\",\"tierADurationMs\":${DA},\"tierBDurationMs\":${DB}}"
-          if [[ "$CA" != "$CB" ]]; then
-            if [[ -n "${SLACK_WEBHOOK_URL}" ]]; then
-              curl -sS -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
-                -d "{\"text\":\"[HIGH] PARITY_FAILURE E010 A=${CA} B=${CB}\"}"
+
+          find_artifact_file() {
+            # $1 = tier letter (A|B), $2 = filename
+            local tier="$1" name="$2"
+            find artifacts -type f -name "$name" 2>/dev/null | grep -i "/parity-${tier}/" | head -1 || true
+          }
+
+          build_payload() {
+            # Env: CA CB DA DB SKIPPED REASON
+            CA="$CA" CB="$CB" DA="$DA" DB="$DB" SKIPPED="${SKIPPED:-false}" REASON="${REASON:-}" node -e '
+              const body = {
+                tierAChecksum: process.env.CA || "missing-a",
+                tierBChecksum: process.env.CB || "missing-b",
+                tierADurationMs: Number(process.env.DA || 0),
+                tierBDurationMs: Number(process.env.DB || 0),
+                skipped: process.env.SKIPPED === "true",
+              };
+              if (process.env.REASON) body.reason = process.env.REASON;
+              process.stdout.write(JSON.stringify(body));
+            '
+          }
+
+          post_parity() {
+            local payload="$1"
+            if [[ -z "${PGOS_BASE_URL:-}" || -z "${PGOS_TOKEN:-}" ]]; then
+              echo "WARN: PGOS_BASE_URL/PGOS_TOKEN not set; skipping orchestrator POST" >&2
+              echo "payload=${payload}"
+              return 0
             fi
+            curl -sS -X POST "${PGOS_BASE_URL}/api/v1/parity" \
+              -H "Authorization: Bearer ${PGOS_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "${payload}"
+          }
+
+          slack_high() {
+            local text="$1"
+            if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+              curl -sS -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                -d "{\"text\":$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$text")}"
+            fi
+          }
+
+          A_CHECK="$(find_artifact_file A checksum.txt)"
+          B_CHECK="$(find_artifact_file B checksum.txt)"
+          A_DUR_FILE="$(find_artifact_file A duration.txt)"
+          B_DUR_FILE="$(find_artifact_file B duration.txt)"
+          A_REIMP_FILE="$(find_artifact_file A reimport_status.txt)"
+          B_REIMP_FILE="$(find_artifact_file B reimport_status.txt)"
+
+          CA="$(cat "$A_CHECK" 2>/dev/null || echo missing-a)"
+          CB="$(cat "$B_CHECK" 2>/dev/null || echo missing-b)"
+          DA="$(cat "$A_DUR_FILE" 2>/dev/null || echo 0)"
+          DB="$(cat "$B_DUR_FILE" 2>/dev/null || echo 0)"
+          RA="$(cat "$A_REIMP_FILE" 2>/dev/null || echo "")"
+          RB="$(cat "$B_REIMP_FILE" 2>/dev/null || echo "")"
+
+          # --- H-13: Tier A unavailable → skip (exit 0, no false E010) ---
+          if [[ -z "$A_CHECK" || "$CA" == "missing-a" ]]; then
+            echo "Tier A artifact missing — reporting skipped (tier_a_unavailable)"
+            SKIPPED=true
+            REASON=tier_a_unavailable
+            post_parity "$(build_payload)"
+            echo "parity skipped: tier_a_unavailable (exit 0)"
+            exit 0
+          fi
+
+          # Tier B must always produce artifacts on ubuntu-latest
+          if [[ -z "$B_CHECK" || "$CB" == "missing-b" ]]; then
+            echo "Tier B artifact missing — hard failure"
+            SKIPPED=false
+            REASON=tier_b_unavailable
+            post_parity "$(build_payload)"
+            slack_high "[HIGH] PARITY_FAILURE E010 reason=tier_b_unavailable A=${CA} B=missing-b"
             exit 1
           fi
+
+          # --- H-12: reimport failure → distinct reason, fail (not silent match) ---
+          # Missing reimport_status on a present artifact is treated as fail (old artifact shape).
+          if [[ "$RA" != "0" || "$RB" != "0" ]]; then
+            if [[ "$RA" != "0" && "$RB" != "0" ]]; then
+              REASON=reimport_failed_both
+            elif [[ "$RA" != "0" ]]; then
+              REASON=reimport_failed_a
+            else
+              REASON=reimport_failed_b
+            fi
+            echo "Reimport failure: ${REASON} (RA=${RA:-missing} RB=${RB:-missing})"
+            SKIPPED=false
+            post_parity "$(build_payload)"
+            slack_high "[HIGH] PARITY_FAILURE E010 reason=${REASON} A=${CA} B=${CB}"
+            exit 1
+          fi
+
+          # Checksum compare
+          SKIPPED=false
+          REASON=""
+          if [[ "$CA" != "$CB" ]]; then
+            REASON=checksum_mismatch
+          fi
+          post_parity "$(build_payload)"
+
+          if [[ "$CA" != "$CB" ]]; then
+            slack_high "[HIGH] PARITY_FAILURE E010 reason=checksum_mismatch A=${CA} B=${CB}"
+            exit 1
+          fi
+
+          echo "parity ok: A=${CA} B=${CB}"

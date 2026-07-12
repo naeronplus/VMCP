@@ -1,0 +1,49 @@
+# H-02: Host-side structural merge for merge_outbox remote rows
+name: PGOS Merge Apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      outboxId:
+        required: true
+        type: string
+      projectId:
+        required: true
+        type: string
+      path:
+        required: true
+        type: string
+      projectRoot:
+        required: true
+        type: string
+      patchGetUrl:
+        required: true
+        type: string
+      s3Key:
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    name: "merge-outbox ${{ inputs.outboxId }}"
+    runs-on: [self-hosted, godot-worker]
+    timeout-minutes: 30
+    env:
+      PGOS_BASE_URL: ${{ secrets.PGOS_BASE_URL }}
+      PGOS_SERVICE_TOKEN: ${{ secrets.PGOS_SERVICE_TOKEN }}
+      OUTBOX_ID: ${{ inputs.outboxId }}
+      PROJECT_ID: ${{ inputs.projectId }}
+      PROJECT_ROOT: ${{ inputs.projectRoot }}
+      REL_PATH: ${{ inputs.path }}
+      PATCH_GET_URL: ${{ inputs.patchGetUrl }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply structural merge
+        run: bash workers/scripts/merge-apply.sh

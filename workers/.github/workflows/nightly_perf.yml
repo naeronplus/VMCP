@@ -1,4 +1,5 @@
 # Nightly performance profiling with MAD outlier filtering (§11.2)
+# M-12: mem_mib.txt is measured peak RSS (not a placeholder); uploaded with perf-out/
 name: Nightly Performance Profile
 
 on:
@@ -19,9 +20,24 @@ jobs:
         run: bash workers/scripts/perf-profile.sh
         env:
           RUN_INDEX: ${{ matrix.run }}
+      - name: Assert measured perf artifacts (M-12)
+        run: |
+          set -euo pipefail
+          test -f perf-out/wall_ms.txt
+          test -f perf-out/cpu_sec.txt
+          test -f perf-out/mem_mib.txt
+          test -f perf-out/mem_method.txt
+          # mem_mib must be a non-negative integer (real measurement path)
+          grep -Eq '^[0-9]+$' perf-out/mem_mib.txt
+          # Measurement method must be one of the real paths (never "none")
+          grep -Eq '^(gnu-time-%M|gnu-time-v|rss-sample)$' perf-out/mem_method.txt
+          # With Godot installed, peak RSS should be > 0 MiB (or at least kb recorded)
+          # Allow 0 MiB only if raw KB rounded down and process was tiny — still require method + integer.
+          echo "mem_mib=$(cat perf-out/mem_mib.txt) method=$(cat perf-out/mem_method.txt) rss_kb=$(cat perf-out/mem_rss_kb.txt 2>/dev/null || echo n/a)"
       - uses: actions/upload-artifact@v4
         with:
           name: perf-${{ matrix.run }}
+          # Entire perf-out/ including mem_mib.txt, mem_rss_kb.txt, mem_method.txt (M-12)
           path: perf-out/
 
   analyze:

@@ -8,7 +8,15 @@ const mirrorWorkflows = join(root, 'workers', '.github', 'workflows');
 const rootFiles = readdirSync(rootWorkflows).filter((f) => f.endsWith('.yml'));
 const mirrorFiles = readdirSync(mirrorWorkflows).filter((f) => f.endsWith('.yml'));
 
-const workerOnly = new Set(['godot_worker.yml', 'godot_health.yml', 'nightly_perf.yml', 'parity_canary.yml']);
+const workerOnly = new Set([
+  'godot_worker.yml',
+  'godot_health.yml',
+  'nightly_perf.yml',
+  'parity_canary.yml',
+  // H-02 / H-03 maintenance workflows (mirrored for packaging)
+  'merge_apply.yml',
+  'uid_reconcile.yml',
+]);
 
 let failed = false;
 for (const file of workerOnly) {

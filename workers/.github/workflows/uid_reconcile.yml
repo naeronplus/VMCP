@@ -1,0 +1,49 @@
+# H-03: Remote UID file rewrite + Godot reimport on Tier A host
+name: PGOS UID Reconcile
+
+on:
+  workflow_dispatch:
+    inputs:
+      projectId:
+        required: true
+        type: string
+      projectRoot:
+        required: true
+        type: string
+      replacementsS3Key:
+        required: true
+        type: string
+      replacementsGetUrl:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    name: "uid-reconcile ${{ inputs.projectId }}"
+    runs-on: [self-hosted, godot-worker]
+    timeout-minutes: 45
+    env:
+      PROJECT_ID: ${{ inputs.projectId }}
+      PROJECT_ROOT: ${{ inputs.projectRoot }}
+      REPLACEMENTS_S3_KEY: ${{ inputs.replacementsS3Key }}
+      REPLACEMENTS_GET_URL: ${{ inputs.replacementsGetUrl }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download replacements map
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pgos-uid
+          curl -sS -f -o /tmp/pgos-uid/replacements.json "${REPLACEMENTS_GET_URL}"
+          test -s /tmp/pgos-uid/replacements.json
+
+      - name: Run uid-reconcile on host project tree
+        run: |
+          bash workers/scripts/uid-reconcile.sh \
+            "${PROJECT_ROOT}" \
+            /tmp/pgos-uid/replacements.json
