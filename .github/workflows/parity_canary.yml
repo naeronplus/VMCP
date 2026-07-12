@@ -1,0 +1,63 @@
+# Hourly Tier A vs Tier B parity canary (§6.2, §11.1)
+name: Tier Parity Canary
+
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  parity:
+    strategy:
+      fail-fast: false
+      matrix:
+        tier: [A, B]
+        # Tier A may be skipped if no self-hosted runner; job reports unavailable
+    runs-on: ${{ matrix.tier == 'A' && fromJSON('["self-hosted","godot-worker"]') || 'ubuntu-latest' }}
+    continue-on-error: ${{ matrix.tier == 'A' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Godot
+        run: bash workers/scripts/setup-godot.sh "4.3.1"
+      - name: Run canary generation
+        id: canary
+        run: bash workers/scripts/parity-canary.sh
+        env:
+          TIER: ${{ matrix.tier }}
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-${{ matrix.tier }}
+          path: parity-out/
+
+  compare:
+    needs: parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Compare checksums and report to PGOS
+        env:
+          PGOS_BASE_URL: ${{ secrets.PGOS_BASE_URL }}
+          PGOS_TOKEN: ${{ secrets.PGOS_ADMIN_TOKEN }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          A=$(find artifacts -name 'checksum.txt' | grep -i '/parity-A/' | head -1 || true)
+          B=$(find artifacts -name 'checksum.txt' | grep -i '/parity-B/' | head -1 || true)
+          CA=$(cat "$A" 2>/dev/null || echo missing-a)
+          CB=$(cat "$B" 2>/dev/null || echo missing-b)
+          DA=$(cat "$(dirname "$A")/duration.txt" 2>/dev/null || echo 0)
+          DB=$(cat "$(dirname "$B")/duration.txt" 2>/dev/null || echo 0)
+          curl -sS -X POST "${PGOS_BASE_URL}/api/v1/parity" \
+            -H "Authorization: Bearer ${PGOS_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"tierAChecksum\":\"${CA}\",\"tierBChecksum\":\"${CB}\",\"tierADurationMs\":${DA},\"tierBDurationMs\":${DB}}"
+          if [[ "$CA" != "$CB" ]]; then
+            if [[ -n "${SLACK_WEBHOOK_URL}" ]]; then
+              curl -sS -X POST "$SLACK_WEBHOOK_URL" -H 'Content-Type: application/json' \
+                -d "{\"text\":\"[HIGH] PARITY_FAILURE E010 A=${CA} B=${CB}\"}"
+            fi
+            exit 1
+          fi

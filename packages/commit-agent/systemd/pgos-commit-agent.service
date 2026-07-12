@@ -1,0 +1,25 @@
+[Unit]
+Description=PGOS cross-machine commit agent
+After=network.target
+
+[Service]
+Type=simple
+User=pgos-agent
+Group=pgos-agent
+Environment=PGOS_AGENT_TOKEN=
+Environment=PGOS_LOCK_KEY=
+Environment=PGOS_LOCK_OWNER=
+Environment=PGOS_REQUIRE_FENCING=true
+ExecStart=/usr/local/bin/commit-agent \
+  -socket /var/run/pgos-commit-agent.sock \
+  -project-root /var/godot/projects \
+  -pgos-url https://pgos.example.com
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/tmp /var/godot/projects /var/lib/pgos-agent /var/run
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

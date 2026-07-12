@@ -1,0 +1,32 @@
+{
+  "name": "vibrato-pgos",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Procedural Generation Orchestration Service (PGOS) — Railway-first Godot asset orchestration (MCP name: Vibrato)",
+  "workspaces": [
+    "packages/shared",
+    "packages/orchestrator",
+    "packages/dashboard",
+    "packages/sandbox-service",
+    "packages/mcp-server"
+  ],
+  "scripts": {
+    "build": "npm run build -w @vibrato/shared && npm run build -w @vibrato/orchestrator && npm run build -w @vibrato/dashboard && npm run build -w @vibrato/sandbox-service && npm run build -w @vibrato/mcp-server",
+    "build:shared": "npm run build -w @vibrato/shared",
+    "build:orchestrator": "npm run build -w @vibrato/orchestrator",
+    "build:dashboard": "npm run build -w @vibrato/dashboard",
+    "build:sandbox": "npm run build -w @vibrato/sandbox-service",
+    "build:mcp": "npm run build -w @vibrato/mcp-server",
+    "dev": "npm run dev -w @vibrato/orchestrator",
+    "dev:dashboard": "npm run dev -w @vibrato/dashboard",
+    "test": "npm run test -w @vibrato/shared && npm run test -w @vibrato/orchestrator && npm run test -w @vibrato/mcp-server && npm run test -w @vibrato/sandbox-service && npm run test -w @vibrato/dashboard",
+    "typecheck": "npm run typecheck -w @vibrato/shared && npm run typecheck -w @vibrato/orchestrator && npm run typecheck -w @vibrato/dashboard && npm run typecheck -w @vibrato/sandbox-service && npm run typecheck -w @vibrato/mcp-server",
+    "lint": "npm run lint -w @vibrato/shared && npm run lint -w @vibrato/orchestrator && npm run lint -w @vibrato/dashboard && npm run lint -w @vibrato/sandbox-service && npm run lint -w @vibrato/mcp-server",
+    "db:migrate": "npm run db:migrate -w @vibrato/orchestrator",
+    "agent:build": "cd packages/commit-agent && go build -o bin/commit-agent ./cmd/agent"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

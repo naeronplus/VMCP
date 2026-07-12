@@ -1,0 +1,38 @@
+# Nightly performance profiling with MAD outlier filtering (§11.2)
+name: Nightly Performance Profile
+
+on:
+  schedule:
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  profile:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        run: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash workers/scripts/setup-godot.sh "4.3.1"
+      - name: Profile run
+        run: bash workers/scripts/perf-profile.sh
+        env:
+          RUN_INDEX: ${{ matrix.run }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: perf-${{ matrix.run }}
+          path: perf-out/
+
+  analyze:
+    needs: profile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: actions/checkout@v4
+      - name: MAD analysis
+        run: node workers/scripts/mad-analyze.mjs artifacts
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

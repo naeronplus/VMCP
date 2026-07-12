@@ -1,0 +1,189 @@
+# Local stack: Postgres, Redis, MinIO, orchestrator (+ dashboard static), sandbox.
+#
+# Fresh clone:
+#   cp .env.example .env
+#   bash scripts/generate-jwt-keys.sh   # writes secrets/jwt-*.pem (gitignored)
+#   # Point JWT_*_PATH in .env at those files (defaults already match)
+#   docker compose up --build
+#
+# Commit-agent is NOT run in Compose — install on target hosts for cross-machine:
+#   cd packages/commit-agent && go build -o /usr/local/bin/commit-agent ./cmd/agent
+#   install bin/commit-agent-once (when shipped) and systemd unit under systemd/
+#   See packages/commit-agent/README.md and workers/README.md.
+#
+# Optional hot-reload profile (host-mounted source):
+#   docker compose --profile dev up
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pgos
+      POSTGRES_PASSWORD: pgos
+      POSTGRES_DB: pgos
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgos_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pgos -d pgos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - pgos_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - pgos_minio:/data
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 3;
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb -p local/pgos-artifacts || true;
+      exit 0;
+      "
+
+  # Single npm ci so orchestrator + sandbox do not race on the bind-mounted tree.
+  npm-ci:
+    image: node:20-bookworm
+    working_dir: /app
+    command: sh -c "npm ci"
+    volumes:
+      - .:/app
+
+  # Prod-like: full monorepo compile inside the container (no host dist/ required).
+  # Builds shared + dashboard + orchestrator so resolveDashboardDist() finds static assets.
+  orchestrator:
+    image: node:20-bookworm
+    working_dir: /app
+    command: >
+      sh -c "npm run build -w @vibrato/shared
+      && npm run build -w @vibrato/dashboard
+      && npm run build -w @vibrato/orchestrator
+      && npm run db:migrate -w @vibrato/orchestrator
+      && npm run start -w @vibrato/orchestrator"
+    volumes:
+      - .:/app
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://pgos:pgos@postgres:5432/pgos
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_FORCE_PATH_STYLE: "true"
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      SANDBOX_SERVICE_URL: http://sandbox:8090
+    depends_on:
+      npm-ci:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      sandbox:
+        condition: service_started
+
+  sandbox:
+    image: node:20-bookworm
+    working_dir: /app
+    command: >
+      sh -c "npm run build -w @vibrato/sandbox-service
+      && npm run start -w @vibrato/sandbox-service"
+    volumes:
+      - .:/app
+    ports:
+      - "8090:8090"
+    environment:
+      PORT: "8090"
+      NODE_ENV: development
+      SANDBOX_INTERNAL_TOKEN: dev-sandbox-token
+    depends_on:
+      npm-ci:
+        condition: service_completed_successfully
+
+  # Dev profile: tsx watch. Usage:
+  #   docker compose --profile dev up npm-ci postgres redis minio minio-init sandbox-dev orchestrator-dev
+  orchestrator-dev:
+    profiles: ["dev"]
+    image: node:20-bookworm
+    working_dir: /app
+    command: >
+      sh -c "npm run build -w @vibrato/shared
+      && npm run build -w @vibrato/dashboard
+      && npm run db:migrate -w @vibrato/orchestrator
+      && npm run dev -w @vibrato/orchestrator"
+    volumes:
+      - .:/app
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://pgos:pgos@postgres:5432/pgos
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT: http://minio:9000
+      S3_FORCE_PATH_STYLE: "true"
+      S3_ACCESS_KEY_ID: minioadmin
+      S3_SECRET_ACCESS_KEY: minioadmin
+      SANDBOX_SERVICE_URL: http://sandbox-dev:8090
+    depends_on:
+      npm-ci:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  sandbox-dev:
+    profiles: ["dev"]
+    image: node:20-bookworm
+    working_dir: /app
+    command: sh -c "npm run dev -w @vibrato/sandbox-service"
+    volumes:
+      - .:/app
+    ports:
+      - "8090:8090"
+    environment:
+      PORT: "8090"
+      NODE_ENV: development
+      SANDBOX_INTERNAL_TOKEN: dev-sandbox-token
+    depends_on:
+      npm-ci:
+        condition: service_completed_successfully
+
+volumes:
+  pgos_pg:
+  pgos_redis:
+  pgos_minio:

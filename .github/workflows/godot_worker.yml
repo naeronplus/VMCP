@@ -1,0 +1,101 @@
+# Tier A (self-hosted godot-worker) or Tier B (GitHub-hosted) worker (§2.2, §2.3, §4, §6)
+name: Godot PGOS Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobId:
+        required: true
+        type: string
+      projectId:
+        required: true
+        type: string
+      godotVersion:
+        required: true
+        type: string
+        default: '4.3.1'
+      commitStrategy:
+        required: true
+        type: string
+        default: 'same-machine'
+      tier:
+        required: false
+        type: string
+        default: 'B'
+      secretJwe:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    name: "PGOS job ${{ inputs.jobId }}"
+    runs-on: ${{ inputs.tier == 'A' && fromJSON('["self-hosted","godot-worker"]') || 'ubuntu-latest' }}
+    timeout-minutes: 90
+    env:
+      PGOS_BASE_URL: ${{ secrets.PGOS_BASE_URL }}
+      JOB_ID: ${{ inputs.jobId }}
+      PROJECT_ID: ${{ inputs.projectId }}
+      GODOT_VERSION: ${{ inputs.godotVersion }}
+      COMMIT_STRATEGY: ${{ inputs.commitStrategy }}
+      SECRET_JWE: ${{ inputs.secretJwe }}
+      REIMPORT_TIMEOUT_SEC: '300'
+      REIMPORT_MAX_RETRIES: '2'
+
+    steps:
+      - name: Checkout worker scripts
+        uses: actions/checkout@v4
+
+      - name: Resolve secrets via dispatch JWE (§9.4)
+        run: bash workers/scripts/resolve-secrets.sh
+
+      - name: Cache Godot binary + export templates (§6.1)
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            .godot-cache
+          key: godot-${{ inputs.godotVersion }}-${{ runner.os }}
+
+      - name: Setup Godot with checksum fallback
+        run: bash workers/scripts/setup-godot.sh "${{ inputs.godotVersion }}"
+
+      - name: Verify exact Godot version
+        run: |
+          INSTALLED=$(godot --version | head -n1 | tr -d '\r')
+          echo "Installed: $INSTALLED requested: ${GODOT_VERSION}"
+          echo "$INSTALLED" | grep -F "${GODOT_VERSION}" || {
+            echo "EXPORT_TEMPLATE_MISMATCH / version drift E006"
+            curl -sS -X PATCH "${PGOS_BASE_URL}/api/v1/jobs/${JOB_ID}/status" \
+              -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d "{\"status\":\"VALIDATION_FAILED\",\"errorCode\":\"E006\",\"errorDetail\":\"version ${INSTALLED} != ${GODOT_VERSION}\"}"
+            exit 1
+          }
+
+      - name: Report STAGING
+        run: |
+          curl -sS -X PATCH "${PGOS_BASE_URL}/api/v1/jobs/${JOB_ID}/status" \
+            -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"status":"STAGING"}'
+
+      - name: Stage, reimport, validate
+        run: |
+          set -euo pipefail
+          HEARTBEAT_PID=""
+          cleanup() {
+            if [[ -n "$HEARTBEAT_PID" ]]; then kill "$HEARTBEAT_PID" 2>/dev/null || true; fi
+          }
+          trap cleanup EXIT
+          bash workers/scripts/heartbeat.sh &
+          HEARTBEAT_PID=$!
+          bash workers/scripts/run-generation.sh
+
+      - name: Atomic commit
+        run: bash workers/scripts/atomic-commit.sh
+
+      - name: Post-commit reimport / rollback
+        run: bash workers/scripts/post-commit-verify.sh

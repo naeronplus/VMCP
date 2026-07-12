@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Assert mcp-server dist artifact
+        run: test -f packages/mcp-server/dist/index.js
+
+      - name: Verify workflow mirrors
+        run: node scripts/verify-workflow-mirrors.mjs
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shellcheck on worker scripts
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck workers/scripts/*.sh workers/scripts/lib/*.sh
+
+      - name: Worker S3 helper smoke test
+        run: bash workers/tests/pgos-s3-smoke.sh
+
+  commit-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Test commit-agent
+        working-directory: packages/commit-agent
+        run: go test ./...
+
+      - name: Build commit-agent
+        working-directory: packages/commit-agent
+        run: go build -o /tmp/commit-agent ./cmd/agent

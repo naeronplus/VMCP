@@ -1,0 +1,73 @@
+# Dual-path health checker — GitHub side (§3.2)
+# Dispatches synthetic health check every 30 minutes (Actions min schedule ~5m; use 30m for cost).
+# For true 30s synthetic probes, use a self-hosted ticker or Railway cron only.
+name: PGOS Orchestration Health Probe
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe orchestration API
+        env:
+          PGOS_BASE_URL: ${{ secrets.PGOS_BASE_URL }}
+          ALERT_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          CODE=$(curl -sS -o /tmp/health.json -w '%{http_code}' "${PGOS_BASE_URL}/health" || echo 000)
+          READY=$(curl -sS -o /tmp/ready.json -w '%{http_code}' "${PGOS_BASE_URL}/ready" || echo 000)
+          echo "health=$CODE ready=$READY"
+          cat /tmp/health.json || true
+
+          # Detect missing Railway cron heartbeats via admin API if token present
+          if [[ -n "${{ secrets.PGOS_ADMIN_TOKEN }}" ]]; then
+            HB_JSON=$(curl -sS "${PGOS_BASE_URL}/api/v1/cron-heartbeats" \
+              -H "Authorization: Bearer ${{ secrets.PGOS_ADMIN_TOKEN }}" || echo '{}')
+            echo "$HB_JSON"
+            export HB_JSON
+            python3 - <<'PY'
+import json, os, sys
+from datetime import datetime, timezone, timedelta
+
+raw = os.environ.get('HB_JSON', '{}')
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError:
+    print('cron-heartbeats: invalid JSON', file=sys.stderr)
+    sys.exit(1)
+
+heartbeats = data.get('heartbeats', [])
+stale_after = timedelta(minutes=2)
+now = datetime.now(timezone.utc)
+stale = []
+for hb in heartbeats:
+    name = hb.get('name', 'unknown')
+    last = hb.get('last_beat_at') or hb.get('lastBeatAt')
+    if not last:
+        stale.append(name)
+        continue
+    try:
+        ts = datetime.fromisoformat(last.replace('Z', '+00:00'))
+    except ValueError:
+        stale.append(name)
+        continue
+    if now - ts > stale_after:
+        stale.append(name)
+
+if stale:
+    print(f'Stale cron heartbeats: {", ".join(stale)}', file=sys.stderr)
+    sys.exit(1)
+PY
+          fi
+
+          if [[ "$CODE" != "200" || "$READY" != "200" ]]; then
+            if [[ -n "${ALERT_WEBHOOK}" ]]; then
+              curl -sS -X POST "$ALERT_WEBHOOK" -H 'Content-Type: application/json' \
+                -d "{\"text\":\"[HIGH] PGOS health probe failed health=${CODE} ready=${READY}\"}"
+            fi
+            exit 1
+          fi
