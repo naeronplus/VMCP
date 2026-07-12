@@ -95,6 +95,7 @@ Job metadata **must** include both `targetHost` and `targetProvisionUrl` or disp
 | `run-generation.sh` | Stage, reimport, validate |
 | `setup-godot.sh` | Install Godot + templates |
 | `resolve-secrets.sh` | JWE → env |
+| `uid-reconcile.sh` | Host-side UID rewrite + Godot reimport when project tree is not on orchestrator |
 
 ## Cross-machine E2E checklist (P0 gate)
 

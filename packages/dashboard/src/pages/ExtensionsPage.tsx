@@ -1,12 +1,20 @@
 import { useEffect, useState } from 'react';
-import { api, type ApprovalRow } from '../api/client';
+import { api, ApiError, type ApprovalRow } from '../api/client';
 
 export function ExtensionsPage({ role }: { role: string }) {
   const [approvals, setApprovals] = useState<ApprovalRow[]>([]);
+  const [error, setError] = useState('');
 
   async function refresh() {
-    const r = await api.approvals();
-    setApprovals(r.approvals);
+    setError('');
+    try {
+      const r = await api.approvals();
+      setApprovals(r.approvals);
+    } catch (e) {
+      setError(
+        e instanceof ApiError ? `${e.code ?? e.status}: ${e.message}` : String(e),
+      );
+    }
   }
 
   useEffect(() => {
@@ -19,6 +27,7 @@ export function ExtensionsPage({ role }: { role: string }) {
         <h1>Extension network approvals</h1>
         <span className="muted">Network egress blocked until admin approval (§10.1)</span>
       </div>
+      {error && <div className="error-text">{error}</div>}
       <div className="panel">
         <table>
           <thead>
@@ -43,8 +52,16 @@ export function ExtensionsPage({ role }: { role: string }) {
                       <button
                         className="btn primary"
                         onClick={async () => {
-                          await api.reviewApproval(a.id, 'approved');
-                          await refresh();
+                          try {
+                            await api.reviewApproval(a.id, 'approved');
+                            await refresh();
+                          } catch (e) {
+                            setError(
+                              e instanceof ApiError
+                                ? `${e.code ?? e.status}: ${e.message}`
+                                : String(e),
+                            );
+                          }
                         }}
                       >
                         Approve
@@ -52,8 +69,16 @@ export function ExtensionsPage({ role }: { role: string }) {
                       <button
                         className="btn"
                         onClick={async () => {
-                          await api.reviewApproval(a.id, 'rejected');
-                          await refresh();
+                          try {
+                            await api.reviewApproval(a.id, 'rejected');
+                            await refresh();
+                          } catch (e) {
+                            setError(
+                              e instanceof ApiError
+                                ? `${e.code ?? e.status}: ${e.message}`
+                                : String(e),
+                            );
+                          }
                         }}
                       >
                         Reject
@@ -65,7 +90,9 @@ export function ExtensionsPage({ role }: { role: string }) {
             ))}
           </tbody>
         </table>
-        {approvals.length === 0 && <div className="empty">No pending approvals</div>}
+        {approvals.length === 0 && !error && (
+          <div className="empty">No pending approvals</div>
+        )}
       </div>
     </>
   );

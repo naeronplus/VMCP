@@ -147,15 +147,23 @@ export class UidService {
   }
 
   /**
-   * Auto-resolve: keep canonical (newest), regenerate others.
+   * Auto-resolve: keep canonical (newest), regenerate others in DB.
+   * Optionally rewrite project files + Godot validate when projectRoot provided (H-03).
    */
-  async autoResolveDuplicates(projectId: string): Promise<{
+  async autoResolveDuplicates(
+    projectId: string,
+    opts?: { projectRoot?: string; runGodot?: boolean },
+  ): Promise<{
     fixed: { oldUid: string; newUid: string; path: string }[];
     manual: { uid: string; paths: string[] }[];
+    filesTouched?: string[];
+    godotOk?: boolean;
+    fileMode?: 'local' | 'remote_script';
   }> {
     const dups = await this.findDuplicates(projectId);
     const fixed: { oldUid: string; newUid: string; path: string }[] = [];
     const manual: { uid: string; paths: string[] }[] = [];
+    const replacements = new Map<string, string>();
 
     for (const group of dups) {
       const { rows } = await getPool().query(
@@ -184,6 +192,8 @@ export class UidService {
           newUid,
           path: row.logical_asset_path,
         });
+        // Map old → new for file rewrite (last write wins if multi)
+        replacements.set(group.uid, newUid);
       }
     }
 
@@ -195,7 +205,32 @@ export class UidService {
         detail: { fixed },
       });
     }
-    return { fixed, manual };
+
+    let filesTouched: string[] | undefined;
+    let godotOk: boolean | undefined;
+    let fileMode: 'local' | 'remote_script' | undefined;
+
+    if (opts?.projectRoot && replacements.size > 0) {
+      const { reconcileProjectFiles } = await import('./uid-file-reconcile.js');
+      const fileResult = await reconcileProjectFiles({
+        projectId,
+        projectRoot: opts.projectRoot,
+        replacements,
+        runGodot: opts.runGodot,
+      });
+      filesTouched = fileResult.filesTouched;
+      godotOk = fileResult.godotOk;
+      fileMode = fileResult.mode;
+      if (fileResult.godotOk === false) {
+        // Surface as manual for operators (E008 path via caller)
+        manual.push({
+          uid: 'godot-reimport-failed',
+          paths: filesTouched,
+        });
+      }
+    }
+
+    return { fixed, manual, filesTouched, godotOk, fileMode };
   }
 }
 

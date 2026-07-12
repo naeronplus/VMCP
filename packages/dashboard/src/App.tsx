@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { api } from './api/client';
+import { canAccess } from './lib/rbac';
+import { PermissionDenied } from './components/PermissionDenied';
 import { LoginPage } from './pages/LoginPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { JobsPage } from './pages/JobsPage';
+import { ProjectsPage } from './pages/ProjectsPage';
 import { LocksPage } from './pages/LocksPage';
 import { DeadLetterPage } from './pages/DeadLetterPage';
 import { TiersPage } from './pages/TiersPage';
@@ -31,6 +34,8 @@ export function App() {
     return <LoginPage onLogin={(u) => setUser(u)} />;
   }
 
+  const role = user.role;
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -42,10 +47,15 @@ export function App() {
             Overview
           </NavLink>
           <NavLink to="/jobs">Jobs</NavLink>
+          {canAccess(role, '/projects') && <NavLink to="/projects">Projects</NavLink>}
           <NavLink to="/locks">Locks</NavLink>
-          <NavLink to="/dead-letter">Dead letter</NavLink>
+          {canAccess(role, '/dead-letter') && (
+            <NavLink to="/dead-letter">Dead letter</NavLink>
+          )}
           <NavLink to="/tiers">Tiers & parity</NavLink>
-          <NavLink to="/extensions">Extension approvals</NavLink>
+          {canAccess(role, '/extensions') && (
+            <NavLink to="/extensions">Extension approvals</NavLink>
+          )}
           <NavLink to="/errors">Error catalog</NavLink>
           <NavLink to="/docs">AGENTS.md</NavLink>
         </nav>
@@ -71,11 +81,30 @@ export function App() {
       <main className="main">
         <Routes>
           <Route path="/" element={<OverviewPage />} />
-          <Route path="/jobs" element={<JobsPage role={user.role} />} />
-          <Route path="/locks" element={<LocksPage role={user.role} />} />
-          <Route path="/dead-letter" element={<DeadLetterPage role={user.role} />} />
+          <Route path="/jobs" element={<JobsPage role={role} />} />
+          <Route path="/projects" element={<ProjectsPage role={role} />} />
+          <Route path="/locks" element={<LocksPage role={role} />} />
+          <Route
+            path="/dead-letter"
+            element={
+              canAccess(role, '/dead-letter') ? (
+                <DeadLetterPage role={role} />
+              ) : (
+                <PermissionDenied resource="Dead letter queue" required="operator" />
+              )
+            }
+          />
           <Route path="/tiers" element={<TiersPage />} />
-          <Route path="/extensions" element={<ExtensionsPage role={user.role} />} />
+          <Route
+            path="/extensions"
+            element={
+              canAccess(role, '/extensions') ? (
+                <ExtensionsPage role={role} />
+              ) : (
+                <PermissionDenied resource="Extension approvals" required="admin" />
+              )
+            }
+          />
           <Route path="/errors" element={<ErrorsPage />} />
           <Route path="/docs" element={<DocsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -1,12 +1,20 @@
 import { useEffect, useState } from 'react';
-import { api, type DeadLetterRow } from '../api/client';
+import { api, ApiError, type DeadLetterRow } from '../api/client';
 
 export function DeadLetterPage({ role }: { role: string }) {
   const [items, setItems] = useState<DeadLetterRow[]>([]);
+  const [error, setError] = useState('');
 
   async function refresh() {
-    const r = await api.deadLetter();
-    setItems(r.items);
+    setError('');
+    try {
+      const r = await api.deadLetter();
+      setItems(r.items);
+    } catch (e) {
+      setError(
+        e instanceof ApiError ? `${e.code ?? e.status}: ${e.message}` : String(e),
+      );
+    }
   }
 
   useEffect(() => {
@@ -19,6 +27,7 @@ export function DeadLetterPage({ role }: { role: string }) {
         <h1>Dead-letter queue</h1>
         <span className="muted">Escalates at 24h (project admin) and 72h (system admin)</span>
       </div>
+      {error && <div className="error-text">{error}</div>}
       <div className="panel">
         <table>
           <thead>
@@ -38,12 +47,20 @@ export function DeadLetterPage({ role }: { role: string }) {
                 <td>{i.attempts}</td>
                 <td className="muted">{new Date(i.created_at).toLocaleString()}</td>
                 <td>
-                  {role === 'admin' && (
+                  {(role === 'admin' || role === 'operator') && (
                     <button
                       className="btn primary"
                       onClick={async () => {
-                        await api.retryDeadLetter(i.job_id);
-                        await refresh();
+                        try {
+                          await api.retryDeadLetter(i.job_id);
+                          await refresh();
+                        } catch (e) {
+                          setError(
+                            e instanceof ApiError
+                              ? `${e.code ?? e.status}: ${e.message}`
+                              : String(e),
+                          );
+                        }
                       }}
                     >
                       Retry
@@ -54,7 +71,7 @@ export function DeadLetterPage({ role }: { role: string }) {
             ))}
           </tbody>
         </table>
-        {items.length === 0 && <div className="empty">Queue empty</div>}
+        {items.length === 0 && !error && <div className="empty">Queue empty</div>}
       </div>
     </>
   );

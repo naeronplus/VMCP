@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, type JobRow, type ProjectRow } from '../api/client';
+import { api, ApiError, type JobRow, type ProjectRow } from '../api/client';
+import { canEnqueueJob } from '../lib/rbac';
 import { usePgosWebSocket } from '../hooks/usePgosWebSocket';
 
 export function JobsPage({ role }: { role: string }) {
@@ -7,6 +8,15 @@ export function JobsPage({ role }: { role: string }) {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
   const [projectId, setProjectId] = useState('');
   const [error, setError] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [godotVersion, setGodotVersion] = useState('');
+  const [preferredTier, setPreferredTier] = useState<'' | 'A' | 'B'>('');
+  const [commitStrategy, setCommitStrategy] = useState<
+    'same-machine' | 'cross-machine'
+  >('same-machine');
+  const [dependsOnJobId, setDependsOnJobId] = useState('');
+
+  const canEnqueue = canEnqueueJob(role);
 
   const refresh = useCallback(async () => {
     const [j, p] = await Promise.all([
@@ -19,7 +29,9 @@ export function JobsPage({ role }: { role: string }) {
   }, [projectId]);
 
   useEffect(() => {
-    void refresh().catch((e) => setError(String(e)));
+    void refresh().catch((e) => {
+      setError(e instanceof ApiError ? `${e.code ?? e.status}: ${e.message}` : String(e));
+    });
   }, [refresh]);
 
   usePgosWebSocket({
@@ -53,6 +65,7 @@ export function JobsPage({ role }: { role: string }) {
             onChange={(e) => setProjectId(e.target.value)}
             className="btn"
           >
+            {projects.length === 0 && <option value="">No projects</option>}
             {projects.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -60,14 +73,39 @@ export function JobsPage({ role }: { role: string }) {
             ))}
           </select>
           <button
+            className="btn"
+            type="button"
+            onClick={() => setShowAdvanced((v) => !v)}
+          >
+            {showAdvanced ? 'Hide advanced' : 'Advanced'}
+          </button>
+          <button
             className="btn primary"
-            disabled={!projectId || (role !== 'operator' && role !== 'admin')}
+            disabled={!projectId || !canEnqueue}
+            title={
+              !projectId
+                ? 'Create a project first'
+                : !canEnqueue
+                  ? 'Requires operator or admin'
+                  : undefined
+            }
             onClick={async () => {
+              setError('');
               try {
-                await api.createJob(projectId);
+                await api.createJob({
+                  projectId,
+                  ...(godotVersion ? { godotVersion } : {}),
+                  ...(preferredTier ? { preferredTier } : {}),
+                  commitStrategy,
+                  ...(dependsOnJobId ? { dependsOnJobId } : {}),
+                });
                 await refresh();
               } catch (e) {
-                setError((e as Error).message);
+                setError(
+                  e instanceof ApiError
+                    ? `${e.code ?? e.status}: ${e.message}`
+                    : String(e),
+                );
               }
             }}
           >
@@ -75,6 +113,54 @@ export function JobsPage({ role }: { role: string }) {
           </button>
         </div>
       </div>
+      {projects.length === 0 && (
+        <div className="panel muted" style={{ marginBottom: '1rem' }}>
+          No projects in the database. An admin must create one on the{' '}
+          <a href="/projects">Projects</a> page before jobs can be enqueued.
+        </div>
+      )}
+      {showAdvanced && (
+        <div className="panel" style={{ marginBottom: '1rem' }}>
+          <div className="row-actions" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <input
+              className="btn"
+              placeholder="Godot version (optional)"
+              value={godotVersion}
+              onChange={(e) => setGodotVersion(e.target.value)}
+            />
+            <select
+              className="btn"
+              value={preferredTier}
+              onChange={(e) =>
+                setPreferredTier(e.target.value as '' | 'A' | 'B')
+              }
+            >
+              <option value="">Any tier</option>
+              <option value="A">Tier A</option>
+              <option value="B">Tier B</option>
+            </select>
+            <select
+              className="btn"
+              value={commitStrategy}
+              onChange={(e) =>
+                setCommitStrategy(
+                  e.target.value as 'same-machine' | 'cross-machine',
+                )
+              }
+            >
+              <option value="same-machine">same-machine</option>
+              <option value="cross-machine">cross-machine</option>
+            </select>
+            <input
+              className="btn"
+              placeholder="dependsOnJobId (uuid)"
+              value={dependsOnJobId}
+              onChange={(e) => setDependsOnJobId(e.target.value)}
+              style={{ minWidth: 280 }}
+            />
+          </div>
+        </div>
+      )}
       {error && <div className="error-text">{error}</div>}
       <div className="panel">
         <table>
@@ -99,7 +185,10 @@ export function JobsPage({ role }: { role: string }) {
                 <td>{j.attempt}</td>
                 <td className="mono">
                   {j.errorCode ? (
-                    <a href={`/api/v1/docs/errors/${j.errorCode}`} title={j.errorDetail ?? ''}>
+                    <a
+                      href={`/api/v1/docs/errors/${j.errorCode}`}
+                      title={j.errorDetail ?? ''}
+                    >
                       {j.errorCode}
                     </a>
                   ) : (

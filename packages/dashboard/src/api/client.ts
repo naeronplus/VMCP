@@ -1,9 +1,17 @@
 const API = '/api/v1';
 
-async function request<T>(
-  path: string,
-  opts: RequestInit = {},
-): Promise<T> {
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+async function request<T>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API}${path}`, {
     credentials: 'include',
     headers: {
@@ -13,10 +21,35 @@ async function request<T>(
     ...opts,
   });
   if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: { message?: string; code?: string };
+    };
+    const code = body?.error?.code;
+    const message =
+      body?.error?.message ??
+      (code ? `${code}: HTTP ${res.status}` : `HTTP ${res.status}`);
+    throw new ApiError(message, res.status, code);
   }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
+}
+
+export interface CreateJobInput {
+  projectId: string;
+  godotVersion?: string;
+  preferredTier?: 'A' | 'B';
+  commitStrategy?: 'same-machine' | 'cross-machine';
+  dependsOnJobId?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CreateProjectInput {
+  name: string;
+  slug: string;
+  godotVersion?: string;
+  projectRoot: string;
+  highVolume?: boolean;
+  adminContacts?: string[];
 }
 
 export const api = {
@@ -25,18 +58,27 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     }),
-  me: () => request<{ user: { id: string; email: string; role: string } | null }>('/auth/me'),
+  me: () =>
+    request<{ user: { id: string; email: string; role: string } | null }>('/auth/me'),
   logout: () => request('/auth/logout', { method: 'POST' }),
   jobs: (projectId?: string) =>
     request<{ jobs: JobRow[] }>(
       `/jobs${projectId ? `?projectId=${projectId}` : ''}`,
     ),
-  createJob: (projectId: string) =>
-    request<{ job: JobRow }>('/jobs', {
+  createJob: (input: CreateJobInput | string) => {
+    const body =
+      typeof input === 'string' ? { projectId: input } : input;
+    return request<{ job: JobRow }>('/jobs', {
       method: 'POST',
-      body: JSON.stringify({ projectId }),
-    }),
+      body: JSON.stringify(body),
+    });
+  },
   projects: () => request<{ projects: ProjectRow[] }>('/projects'),
+  createProject: (input: CreateProjectInput) =>
+    request<{ project: ProjectRow }>('/projects', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   locks: () => request<{ locks: LockRow[] }>('/locks'),
   reclaimLock: (lockKey: string, reason: string) =>
     request('/locks/reclaim', {
@@ -55,9 +97,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ status }),
     }),
-  errorCatalog: () => request<{ catalog: Record<string, ErrorDef> }>('/errors/catalog'),
+  errorCatalog: () =>
+    request<{ catalog: Record<string, ErrorDef> }>('/errors/catalog'),
   searchErrors: (q: string) =>
-    request<{ errors: JobErrorRow[] }>(`/jobs/errors/search?q=${encodeURIComponent(q)}`),
+    request<{ errors: JobErrorRow[] }>(
+      `/jobs/errors/search?q=${encodeURIComponent(q)}`,
+    ),
 };
 
 export interface JobRow {
@@ -78,8 +123,12 @@ export interface ProjectRow {
   id: string;
   name: string;
   slug: string;
-  godot_version: string;
-  high_volume: boolean;
+  godot_version?: string;
+  godotVersion?: string;
+  high_volume?: boolean;
+  highVolume?: boolean;
+  project_root?: string;
+  projectRoot?: string;
 }
 
 export interface LockRow {

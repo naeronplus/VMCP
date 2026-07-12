@@ -417,14 +417,24 @@ async function scanParityStale(): Promise<void> {
 }
 
 async function nightlyUidReconcile(): Promise<void> {
-  const { rows } = await getPool().query(`SELECT id FROM projects`);
+  const { rows } = await getPool().query(
+    `SELECT id, project_root FROM projects`,
+  );
   for (const p of rows) {
-    const result = await uidService.autoResolveDuplicates(p.id);
+    const result = await uidService.autoResolveDuplicates(p.id, {
+      projectRoot: p.project_root ? String(p.project_root) : undefined,
+      runGodot: true,
+    });
     if (result.manual.length > 0) {
       await sendAlert({
         title: 'UID duplicates require manual review',
         severity: 'medium',
-        body: JSON.stringify(result.manual),
+        body: JSON.stringify({
+          manual: result.manual,
+          filesTouched: result.filesTouched,
+          fileMode: result.fileMode,
+          godotOk: result.godotOk,
+        }),
         code: 'E008',
         projectId: p.id,
       });
@@ -433,7 +443,7 @@ async function nightlyUidReconcile(): Promise<void> {
       await sendAlert({
         title: 'UID duplicates auto-fixed',
         severity: 'low',
-        body: `Fixed ${result.fixed.length} mappings`,
+        body: `Fixed ${result.fixed.length} mappings; filesTouched=${result.filesTouched?.length ?? 0}; mode=${result.fileMode ?? 'db-only'}`,
         code: 'E007',
         projectId: p.id,
       });

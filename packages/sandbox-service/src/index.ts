@@ -17,7 +17,10 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
-import { validateSandboxProductionEnv } from './production-validation.js';
+import {
+  firecrackerHealth,
+  validateSandboxProductionEnv,
+} from './production-validation.js';
 
 validateSandboxProductionEnv();
 
@@ -49,12 +52,21 @@ app.addHook('onRequest', async (req, reply) => {
   }
 });
 
-app.get('/health', async () => ({
-  ok: true,
-  service: 'pgos-sandbox',
-  backend: process.env.SANDBOX_BACKEND ?? 'worker_thread_policy_enforcer',
-  firecrackerReady: process.env.FIRECRACKER_SOCKET ? true : false,
-}));
+app.get('/health', async () => {
+  const fc = firecrackerHealth();
+  const defaultBackend =
+    process.env.SANDBOX_BACKEND ??
+    (fc.launcherMode === 'stub' && !process.env.FIRECRACKER_SOCKET
+      ? 'worker_thread_policy_enforcer'
+      : fc.backend);
+  return {
+    ok: true,
+    service: 'pgos-sandbox',
+    backend: defaultBackend,
+    firecrackerReady: fc.firecrackerReady,
+    firecrackerLauncherMode: fc.launcherMode,
+  };
+});
 
 app.post('/v1/execute', async (req, reply) => {
   const body = executeSchema.parse(req.body);

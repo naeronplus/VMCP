@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Production Firecracker launcher hook — wire to firecracker-containerd or custom microVM runner.
-# Reads JSON payload from stdin; writes JSON result to stdout.
+# Firecracker microVM launcher hook.
+# FIRECRACKER_LAUNCHER_MODE=stub|real (default stub in dev).
+# Production must use mode=real with a real hypervisor integration (fail-closed gate in Node).
 set -euo pipefail
 
+MODE="${FIRECRACKER_LAUNCHER_MODE:-stub}"
 SOCKET=""
 EXTENSION_ID=""
 TIMEOUT_MS="60000"
@@ -31,5 +33,13 @@ if [[ "$NETWORK" == "0" ]] && echo "$PAYLOAD" | grep -q '"fetchUrl"'; then
   exit 3
 fi
 
-# Replace this block with real Firecracker VM lifecycle when hypervisor is available.
-printf '%s\n' "{\"ok\":true,\"backend\":\"firecracker\",\"socket\":\"${SOCKET}\",\"extensionId\":\"${EXTENSION_ID}\",\"limits\":{\"timeoutMs\":${TIMEOUT_MS},\"memoryBytes\":${MEMORY_BYTES}},\"policy\":{\"network\":${NETWORK}}}"
+if [[ "$MODE" == "stub" ]]; then
+  # Identifiable stub — monitors must NOT treat this as production Firecracker.
+  printf '%s\n' "{\"ok\":true,\"backend\":\"firecracker-stub\",\"socket\":\"${SOCKET}\",\"extensionId\":\"${EXTENSION_ID}\",\"limits\":{\"timeoutMs\":${TIMEOUT_MS},\"memoryBytes\":${MEMORY_BYTES}},\"policy\":{\"network\":${NETWORK}}}"
+  exit 0
+fi
+
+# Real mode: integrate firecracker-containerd / custom microVM spawn here.
+# Until wired, fail closed so production health cannot claim success.
+echo '{"error":"FIRECRACKER_REAL_NOT_WIRED: implement microVM spawn for FIRECRACKER_LAUNCHER_MODE=real"}' >&2
+exit 4

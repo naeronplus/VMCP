@@ -46,7 +46,12 @@ Concurrent reservations for the same logical path are serialized with row-level 
 
 ### External edits
 
-Nightly reconciliation scans project files for `uid://` strings, auto-resolves duplicates (canonical = OVRD- or newest), and rewrites references via headless Godot when possible. Failures raise E008 for manual review.
+Nightly reconciliation (`pgos-uid-reconcile` worker):
+
+1. Finds duplicate UIDs in `uid_mappings` (canonical = OVRD- or newest).
+2. When `project_root` is readable on the orchestrator, scans `.tscn`/`.tres`/`.import`/… for `uid://` tokens and rewrites full tokens only.
+3. Runs headless Godot reimport when files change; failures raise **E008** for manual review.
+4. When files live only on a remote host, use `workers/scripts/uid-reconcile.sh <project_root> <map.json>` on that host (orchestrator audits `mode: remote_script`).
 
 ## Common pitfalls
 
@@ -57,19 +62,23 @@ Nightly reconciliation scans project files for `uid://` strings, auto-resolves d
 
 ## Structural merge for `.tscn`
 
-Overrides applied via `POST /merge` perform structural merge:
+Overrides applied via `POST /merge` perform structural merge when enabled (`PGOS_STRUCTURAL_MERGE` default on; set `0` to disable file writes):
 
-1. Match nodes by stable path / name within parent.
-2. Merge properties; sub-resources merge by UID when present.
+1. Match nodes by stable path / name within parent (`Root/Player`).
+2. Merge properties; `ext_resource` rows merge by `uid://` when present.
 3. **Script attachments** (`script = ExtResource(...)`) require **admin** role (threat model E019).
 4. Never invent new executable scripts from operator-tier patches.
+5. **Apply modes:**
+   - `local_fs` (auto when `project_root` is readable): atomic write of merged `.tscn` + override row + content hash.
+   - `outbox`: override row + `merge_outbox` pending row for host-side apply when the tree is not on the orchestrator.
+   - Force with `PGOS_MERGE_MODE=local_fs|outbox|auto|registry_only`.
 
 ### Example
 
 ```
 Base:   Root/Player (script: player.gd)
-Patch:  Root/Player { position: Vector2(10, 0) }   # operator OK
-Patch:  Root/Player { script: enemy.gd }           # admin only
+Patch JSON: { "nodes": [{ "path": "Root/Player", "properties": { "position": "Vector2(10, 0)" } }] }  # operator OK
+Patch with script property → admin only (E019)
 ```
 
 ## Export templates

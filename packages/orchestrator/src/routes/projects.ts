@@ -175,7 +175,16 @@ export async function projectRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [authenticate, requireRole('admin')] },
     async (req) => {
       const { id } = req.params as { id: string };
-      const result = await uidService.autoResolveDuplicates(id);
+      const { rows } = await getPool().query(
+        `SELECT project_root FROM projects WHERE id = $1`,
+        [id],
+      );
+      const result = await uidService.autoResolveDuplicates(id, {
+        projectRoot: rows[0]?.project_root
+          ? String(rows[0].project_root)
+          : undefined,
+        runGodot: true,
+      });
       return { result };
     },
   );

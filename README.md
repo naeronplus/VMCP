@@ -145,8 +145,10 @@ npm run lint        # tsc --noEmit on shared, orchestrator, dashboard, sandbox-s
 | Cross-machine crash recovery | commit-agent idempotent rename + pending sidecar |
 | Reimport retries | `workers/scripts/run-generation.sh` backoff 10s/30s, max 2 |
 | UID concurrency | `UidService.reserve` advisory + row lock |
-| Nightly UID reconcile | BullMQ `pgos-uid-reconcile` |
-| Extension sandbox | `sandbox-service` network deny-by-default, timeout kill |
+| Nightly UID reconcile | BullMQ `pgos-uid-reconcile` + file scan/rewrite when `project_root` local; `uid-reconcile.sh` on remote hosts |
+| Extension sandbox | `sandbox-service` network deny-by-default; Firecracker `FIRECRACKER_LAUNCHER_MODE=stub\|real` fail-closed in production |
+| dependsOnJobId ordering | Create/dispatch/promote gates (BLOCKED until COMPLETED; E011 on dep failure) |
+| Structural `.tscn` merge | `POST /merge` local FS write or merge_outbox; script patches require admin (E019) |
 | Tier parity | `parity_canary.yml` + dashboard |
 | Dead-letter 24/72h | `dead-letter-escalate` worker |
 | Token revocation | Redis set + Postgres `token_revocations` |

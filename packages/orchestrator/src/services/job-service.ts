@@ -26,6 +26,11 @@ import {
   provisionPublicKey,
   resolveCrossMachineProvision,
 } from './ssh-provision.js';
+import {
+  canPromoteBlockedJob,
+  evaluateDependencyGate,
+  PROJECT_SLOT_ACTIVE_STATUSES,
+} from './dependency-gate.js';
 import { audit } from './audit-service.js';
 import { sendAlert } from './alert-service.js';
 import { getWsHub } from '../lib/ws-hub.js';
@@ -125,30 +130,39 @@ export class JobService {
     const godotVersion = req.godotVersion ?? project.godot_version ?? env.GODOT_DEFAULT_VERSION;
     const commitStrategy: CommitStrategy = req.commitStrategy ?? 'same-machine';
 
+    // H-01: validate dependsOnJobId before insert
+    let dependencyBlocks = false;
+    if (req.dependsOnJobId) {
+      const dep = await this.getById(req.dependsOnJobId);
+      const gate = evaluateDependencyGate(
+        dep
+          ? { id: dep.id, projectId: dep.projectId, status: dep.status }
+          : null,
+        req.projectId,
+      );
+      if (gate.action === 'dep_failed') {
+        throw Object.assign(new Error(gate.reason), {
+          statusCode: dep ? 400 : 404,
+          code: 'E011',
+        });
+      }
+      if (gate.action === 'block_dependency') {
+        dependencyBlocks = true;
+      }
+    }
+
     // Include retriable failures still mid-retry as active holders of the project slot
-    const activeStatuses = [
-      'QUEUED',
-      'DISPATCHING',
-      'STAGING',
-      'VALIDATING',
-      'VALIDATION_REPORT',
-      'COMMITTING',
-      'POST_COMMIT_VERIFY',
-      'REIMPORT_FAILED',
-      'VALIDATION_FAILED',
-      'COMMIT_FAILED',
-      'DISPATCH_TIMEOUT',
-      'DISPATCH_FAILED',
-    ];
     const { rows: activeJobs } = await getPool().query(
       `SELECT id, status FROM jobs
        WHERE project_id = $1 AND status = ANY($2::text[])
        ORDER BY created_at ASC LIMIT 1`,
-      [req.projectId, activeStatuses],
+      [req.projectId, PROJECT_SLOT_ACTIVE_STATUSES],
     );
 
-    const blocked = activeJobs.length > 0;
-    const blockedBy = blocked ? activeJobs[0].id : null;
+    const concurrentBlocked = activeJobs.length > 0;
+    // blocked_by_job_id is concurrency only; depends_on_job_id is ordering
+    const blockedBy = concurrentBlocked ? activeJobs[0].id : null;
+    const blocked = dependencyBlocks || concurrentBlocked;
     const status: JobStatus = blocked ? 'BLOCKED' : 'QUEUED';
     const estimatedWait = blocked ? 120 : 0;
 
@@ -178,7 +192,12 @@ export class JobService {
       action: 'job.created',
       resourceType: 'job',
       resourceId: job.id,
-      detail: { status, blockedBy, preferredTier: req.preferredTier },
+      detail: {
+        status,
+        blockedBy,
+        dependsOnJobId: req.dependsOnJobId ?? null,
+        preferredTier: req.preferredTier,
+      },
     });
 
     if (!blocked) {
@@ -204,6 +223,35 @@ export class JobService {
       job.status !== 'DISPATCH_FAILED'
     ) {
       return;
+    }
+
+    // H-01: never acquire locks / dispatch until dependency COMPLETED
+    if (job.dependsOnJobId) {
+      const dep = await this.getById(job.dependsOnJobId);
+      const gate = evaluateDependencyGate(
+        dep
+          ? { id: dep.id, projectId: dep.projectId, status: dep.status }
+          : null,
+        job.projectId,
+      );
+      if (gate.action === 'dep_failed') {
+        await this.updateStatus(jobId, {
+          status: 'DEP_FAILED',
+          errorCode: 'E011',
+          errorDetail: gate.reason,
+        });
+        return;
+      }
+      if (gate.action === 'block_dependency') {
+        await getPool().query(
+          `UPDATE jobs SET status = 'BLOCKED',
+             metadata = metadata || $2::jsonb,
+             updated_at = now()
+           WHERE id = $1`,
+          [jobId, JSON.stringify({ reason: 'dependency_incomplete', detail: gate.reason })],
+        );
+        return;
+      }
     }
 
     const { rows: projects } = await getPool().query(
@@ -694,7 +742,8 @@ export class JobService {
   }
 
   /**
-   * When active job finishes, dispatch blocked jobs or mark DEP_FAILED (§7.2).
+   * When active job finishes, dispatch blocked jobs or mark DEP_FAILED (§7.2, H-01).
+   * Checks both dependsOnJobId (ordering) and project concurrency slots.
    */
   private async promoteBlockedJobs(
     projectId: string,
@@ -709,20 +758,52 @@ export class JobService {
 
     for (const row of rows) {
       const job = mapJob(row);
-      if (job.blockedByJobId && job.blockedByJobId !== finishedJobId) {
-        continue;
+
+      let dependencyStatus: JobStatus | null = null;
+      if (job.dependsOnJobId) {
+        const dep = await this.getById(job.dependsOnJobId);
+        dependencyStatus = dep?.status ?? null;
       }
-      if (
-        job.dependsOnJobId === finishedJobId &&
-        finishedStatus !== 'COMPLETED'
-      ) {
+
+      let blockedByStatus: JobStatus | null = null;
+      if (job.blockedByJobId) {
+        const blocker = await this.getById(job.blockedByJobId);
+        blockedByStatus = blocker?.status ?? null;
+      }
+
+      const { rows: active } = await getPool().query(
+        `SELECT id FROM jobs
+         WHERE project_id = $1
+           AND id <> $2
+           AND status = ANY($3::text[])
+         LIMIT 1`,
+        [projectId, finishedJobId, PROJECT_SLOT_ACTIVE_STATUSES],
+      );
+
+      const decision = canPromoteBlockedJob({
+        dependsOnJobId: job.dependsOnJobId,
+        blockedByJobId: job.blockedByJobId,
+        finishedJobId,
+        finishedStatus,
+        dependencyStatus,
+        concurrentActiveHeld: active.length > 0,
+        blockedByStatus,
+      });
+
+      if (decision.depFailed) {
         await this.updateStatus(job.id, {
           status: 'DEP_FAILED',
           errorCode: 'E011',
-          errorDetail: `Dependency job ${finishedJobId} ended with ${finishedStatus}`,
+          errorDetail:
+            decision.reason ??
+            `Dependency job ${job.dependsOnJobId} ended with non-COMPLETED status`,
         });
         continue;
       }
+      if (!decision.promote) {
+        continue;
+      }
+
       await getPool().query(
         `UPDATE jobs SET status = 'QUEUED', blocked_by_job_id = NULL,
            estimated_wait_seconds = 0, updated_at = now()
