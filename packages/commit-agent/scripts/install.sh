@@ -50,6 +50,21 @@ exec "\${COMMIT_AGENT_BIN:-${COMMIT_AGENT_BIN}}" -once "\${SSH_ORIGINAL_COMMAND:
 EOF
 chmod 0755 "${COMMIT_AGENT_ONCE}"
 
+# H-02: share tscn-merge.mjs for operators/debug (merge-apply verb is pure Go in the agent).
+SHARE_DIR="${PGOS_SHARE_DIR:-/usr/share/pgos}"
+TSCN_MERGE_SRC="${PKG_ROOT}/../../workers/scripts/lib/tscn-merge.mjs"
+if [[ -f "${TSCN_MERGE_SRC}" ]]; then
+  mkdir -p "${SHARE_DIR}"
+  install -m 0644 "${TSCN_MERGE_SRC}" "${SHARE_DIR}/tscn-merge.mjs"
+  echo "  share:  ${SHARE_DIR}/tscn-merge.mjs"
+elif [[ -f "${PKG_ROOT}/share/tscn-merge.mjs" ]]; then
+  mkdir -p "${SHARE_DIR}"
+  install -m 0644 "${PKG_ROOT}/share/tscn-merge.mjs" "${SHARE_DIR}/tscn-merge.mjs"
+  echo "  share:  ${SHARE_DIR}/tscn-merge.mjs"
+else
+  echo "WARN: tscn-merge.mjs not found (optional share install skipped)" >&2
+fi
+
 # Optional systemd unit if present
 if [[ -f "${PKG_ROOT}/systemd/pgos-commit-agent.service" ]]; then
   echo "systemd unit available at ${PKG_ROOT}/systemd/pgos-commit-agent.service (install manually if needed)"
@@ -58,4 +73,5 @@ fi
 echo "Installed:"
 echo "  ${COMMIT_AGENT_BIN}"
 echo "  ${COMMIT_AGENT_ONCE}"
-echo "Verify: ${COMMIT_AGENT_BIN} -once 'stat-lock /var/godot/projects'  # or --help via -once usage"
+echo "Verify: ${COMMIT_AGENT_BIN} -once 'stat-lock /var/godot/projects'"
+echo "        ${COMMIT_AGENT_BIN} -once 'merge-apply /var/godot/projects/game scenes/player.tscn' < patch.json"

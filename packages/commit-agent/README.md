@@ -20,8 +20,22 @@ command="commit-agent-once",no-port-forwarding,no-X11-forwarding,no-agent-forwar
 | `restore` | tar.gz **or** — | `<target_dir> [backup_path]` | Replace target from stdin archive or local backup |
 | `snapshot-export` | — | `<project_path>` | Stream **tar.gz of live project tree to stdout** (C-03 primary S3 rollback). Excludes `.godot/`. Missing path → exit 1. Status only on stderr (binary stdout). |
 | `stat-lock` | — | `<project_path>` | **CM-LOCK-01:** print `locked` or `unlocked` for `project.godot.lock` on the target FS (workers wait before commit). |
+| `merge-apply` | JSON patch | `<project_root> <rel_path>` | **H-02:** structural `.tscn` merge on the target host. Patch schema matches `POST /merge`. Max stdin **1 MiB**. Atomic write via `*.pgos-merge-<pid>` → rename. Stdout: `{"ok":true,"mergedHash":"<sha256>","path":"<rel>"}`. Script patches rejected (**E019**). Path escape → **E014**. |
 
 Unknown verbs are rejected (no shell).
+
+#### `merge-apply` ForcedCommand example
+
+```bash
+# From Tier A runner (via pgos_ssh_agent_stdin / commit-agent-once):
+# SSH_ORIGINAL_COMMAND='merge-apply /var/godot/projects/mygame scenes/player.tscn'
+# patch JSON on stdin
+echo '{"nodes":[{"path":"Root/Player","properties":{"position":"Vector2(10, 0)"}}]}' \
+  | commit-agent -once "merge-apply /var/godot/projects/mygame scenes/player.tscn"
+# → {"ok":true,"mergedHash":"…","path":"scenes/player.tscn"}
+```
+
+`install.sh` also copies `tscn-merge.mjs` to `/usr/share/pgos/tscn-merge.mjs` for host-side debugging; the agent verb itself is **pure Go** (no Node required on the target).
 
 ### Backup hierarchy (cross-machine)
 

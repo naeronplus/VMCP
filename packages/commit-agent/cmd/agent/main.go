@@ -7,6 +7,7 @@
 //	restore <target_dir> [backup_path]   # tar.gz on stdin if no backup_path
 //	snapshot-export <project_path>       # tar.gz of live tree on stdout (C-03)
 //	stat-lock <project_path>             # stdout: locked|unlocked (CM-LOCK-01)
+//	merge-apply <project_root> <rel_path>  # JSON patch on stdin → structural .tscn merge (H-02)
 //
 // Over Unix domain socket: same argv-style or JSON commit protocol.
 package main
@@ -49,6 +50,7 @@ const (
 	cmdRestore        = "restore"
 	cmdSnapshotExport = "snapshot-export"
 	cmdStatLock       = "stat-lock"
+	cmdMergeApply     = "merge-apply"
 )
 
 // Godot editor lock file basename (CM-LOCK-01).
@@ -142,6 +144,15 @@ func main() {
 		}
 		// stat-lock prints locked|unlocked only (msg is the line); no extra noise
 		if len(parts) > 0 && parts[0] == cmdStatLock {
+			if code != 0 {
+				fmt.Fprintln(os.Stderr, msg)
+				os.Exit(code)
+			}
+			fmt.Fprintln(os.Stdout, msg)
+			os.Exit(0)
+		}
+		// merge-apply: single JSON line on stdout; failures only on stderr
+		if len(parts) > 0 && parts[0] == cmdMergeApply {
 			if code != 0 {
 				fmt.Fprintln(os.Stderr, msg)
 				os.Exit(code)
@@ -257,8 +268,10 @@ func (a *Agent) handleArgs(parts []string) (int, string) {
 		return a.handleSnapshotExport(parts)
 	case cmdStatLock:
 		return a.handleStatLock(parts)
+	case cmdMergeApply:
+		return a.handleMergeApply(parts, os.Stdin)
 	default:
-		return 1, "unknown verb (allowed: stage-receive, commit, reimport, restore, snapshot-export, stat-lock)"
+		return 1, "unknown verb (allowed: stage-receive, commit, reimport, restore, snapshot-export, stat-lock, merge-apply)"
 	}
 }
 

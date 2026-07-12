@@ -564,6 +564,76 @@ func TestHandleArgs_MultiVerbSurface(t *testing.T) {
 	if c, m := a.handleArgs([]string{"stat-lock"}); c == 0 || !strings.Contains(m, "usage: stat-lock") {
 		t.Fatalf("stat-lock usage: %d %s", c, m)
 	}
+	if c, m := a.handleArgs([]string{"merge-apply", "only-root"}); c == 0 || !strings.Contains(m, "usage: merge-apply") {
+		t.Fatalf("merge-apply usage: %d %s", c, m)
+	}
+}
+
+// TestIntegration_MergeApply — H-02-MERGE-VERB: ForcedCommand-style structural merge.
+func TestIntegration_MergeApply(t *testing.T) {
+	projectRoot := t.TempDir()
+	a := testAgent(t, projectRoot)
+	game := filepath.Join(projectRoot, "proj")
+	rel := "scenes/player.tscn"
+	full := filepath.Join(game, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	base := `[gd_scene format=3]
+
+[node name="Root" type="Node2D"]
+
+[node name="Player" type="CharacterBody2D" parent="Root"]
+position = Vector2(0, 0)
+`
+	if err := os.WriteFile(full, []byte(base), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	patch, _ := json.Marshal(map[string]any{
+		"nodes": []any{
+			map[string]any{
+				"path":       "Root/Player",
+				"properties": map[string]any{"position": "Vector2(10, 0)"},
+			},
+		},
+	})
+	code, msg := a.handleMergeApply([]string{"merge-apply", game, rel}, bytes.NewReader(patch))
+	if code != 0 {
+		t.Fatalf("merge-apply integration failed: %s", msg)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(msg), &out); err != nil {
+		t.Fatalf("json: %v", err)
+	}
+	if out["ok"] != true {
+		t.Fatalf("ok: %v", out)
+	}
+	got, err := os.ReadFile(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "Vector2(10, 0)") {
+		t.Fatalf("merged file: %s", got)
+	}
+
+	// E019 reject does not modify file further
+	before := string(got)
+	bad, _ := json.Marshal(map[string]any{
+		"nodes": []any{
+			map[string]any{
+				"path":       "Root/Player",
+				"properties": map[string]any{"script": `ExtResource("1")`},
+			},
+		},
+	})
+	code, msg = a.handleMergeApply([]string{"merge-apply", game, rel}, bytes.NewReader(bad))
+	if code == 0 || !strings.Contains(msg, "E019") {
+		t.Fatalf("expected E019: %d %s", code, msg)
+	}
+	after, _ := os.ReadFile(full)
+	if string(after) != before {
+		t.Fatal("file mutated after E019 reject")
+	}
 }
 
 func TestOnceMode_SSHOriginalCommandDrivesCommitVerb(t *testing.T) {
