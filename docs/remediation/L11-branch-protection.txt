@@ -1,24 +1,72 @@
 # L-11 branch protection evidence — 2026-07-12
 
-Repository: https://github.com/naeronplus/VMCP
-Visibility: public (required for free-plan classic branch protection)
-Default branch: main
-origin: https://github.com/naeronplus/VMCP.git
+## Repository
 
-## Protection settings (PUT + GET)
+| Field | Value |
+| --- | --- |
+| URL | https://github.com/naeronplus/VMCP |
+| Clone | https://github.com/naeronplus/VMCP.git |
+| Visibility | **public** (classic branch protection requires Pro on private free-tier accounts) |
+| Default branch | `main` |
+| Owner | `naeronplus` |
+| Local `origin` | `https://github.com/naeronplus/VMCP.git` |
 
-Required status checks (strict):
-- node
-- Worker smokes (TEST-03)
-- commit-agent
+## Steps completed
 
-enforce_admins: true
-allow_force_pushes: false
-allow_deletions: false
+1. Created empty repo `naeronplus/VMCP` via `gh repo create`.
+2. Fast-forwarded local `main` to remediation stack (`45af482` then `243ba04`).
+3. Set `origin` and pushed `main` + `remediation/v3-report-2026-07-12` (no force-push).
+4. Applied classic branch protection on `main` (see API response below).
+5. Public visibility enabled so free-plan branch protection works.
 
-## Raw API response
+## Protection settings (target / applied)
+
+| Setting | Value |
+| --- | --- |
+| Required status checks (strict) | `node`, `Worker smokes (TEST-03)`, `commit-agent` |
+| enforce_admins | true |
+| allow_force_pushes | false |
+| allow_deletions | false |
+
+## CI status (operator follow-up)
+
+**GitHub Actions cannot start jobs** on this account:
+
+```
+The job was not started because your account is locked due to a billing issue.
+```
+
+Evidence runs (all blocked at startup):
+
+- https://github.com/naeronplus/VMCP/actions/runs/29211761726 (CI after L-11 docs push)
+- Earlier push suites concluded `startup_failure` / `BuildFailed` for the same reason
+
+**Operator action required for full L-11 DoD (“CI green on main”):**
+
+1. Resolve GitHub billing / unlock Actions for `naeronplus` (Settings → Billing).
+2. Empty commit or re-run workflow on `main`:  
+   `git commit --allow-empty -m "ci: re-run after billing unlock" && git push origin main`
+3. Confirm all three required checks green on `main`.
+4. If protection was temporarily relaxed during setup, re-apply:
+
+```bash
+gh api -X PUT repos/naeronplus/VMCP/branches/main/protection \
+  -H "Accept: application/vnd.github+json" \
+  --input docs/remediation/L11-protection-payload.json
+```
+
+## Raw API response (first successful PUT after public)
+
+```json
 {"url":"https://api.github.com/repos/naeronplus/VMCP/branches/main/protection","required_status_checks":{"url":"https://api.github.com/repos/naeronplus/VMCP/branches/main/protection/required_status_checks","strict":true,"contexts":["node","Worker smokes (TEST-03)","commit-agent"],"contexts_url":"https://api.github.com/repos/naeronplus/VMCP/branches/main/protection/required_status_checks/contexts","checks":[{"context":"node","app_id":null},{"context":"Worker smokes (TEST-03)","app_id":null},{"context":"commit-agent","app_id":null}]},"required_signatures":{"url":"https://api.github.com/repos/naeronplus/VMCP/branches/main/protection/required_signatures","enabled":false},"enforce_admins":{"url":"https://api.github.com/repos/naeronplus/VMCP/branches/main/protection/enforce_admins","enabled":true},"required_linear_history":{"enabled":false},"allow_force_pushes":{"enabled":false},"allow_deletions":{"enabled":false},"block_creations":{"enabled":false},"required_conversation_resolution":{"enabled":false},"lock_branch":{"enabled":false},"allow_fork_syncing":{"enabled":false}}
+```
 
-=== GET protection ===
-{"url":"https://api.github.com/repos/naeronplus/VMCP/branches/main/protection","required_status_checks":{"url":"https://api.github.com/repos/naeronplus/VMCP/branches/main/protection/required_status_checks","strict":true,"contexts":["node","Worker smokes (TEST-03)","commit-agent"],"contexts_url":"https://api.github.com/repos/naeronplus/VMCP/branches/main/protection/required_status_checks/contexts","checks":[{"context":"node","app_id":null},{"context":"Worker smokes (TEST-03)","app_id":null},{"context":"commit-agent","app_id":null}]},"required_signatures":{"url":"https://api.github.com/repos/naeronplus/VMCP/branches/main/protection/required_signatures","enabled":false},"enforce_admins":{"url":"https://api.github.com/repos/naeronplus/VMCP/branches/main/protection/enforce_admins","enabled":true},"required_linear_history":{"enabled":false},"allow_force_pushes":{"enabled":false},"allow_deletions":{"enabled":false},"block_creations":{"enabled":false},"required_conversation_resolution":{"enabled":false},"lock_branch":{"enabled":false},"allow_fork_syncing":{"enabled":false}}
+## Local verification
 
+```
+git remote -v
+# origin  https://github.com/naeronplus/VMCP.git (fetch)
+# origin  https://github.com/naeronplus/VMCP.git (push)
+
+npm run verify:r5
+```
