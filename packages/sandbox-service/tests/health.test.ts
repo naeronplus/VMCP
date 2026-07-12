@@ -1,20 +1,29 @@
+/**
+ * Lightweight health / backend smoke (expanded coverage lives in
+ * production-validation.test.ts and execute.test.ts — M-15).
+ */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   firecrackerHealth,
   getFirecrackerLauncherMode,
+  resolveSandboxBackendName,
   validateSandboxProductionEnv,
 } from '../src/production-validation.js';
+import { memoryLimitToMb } from '../src/run-isolated.js';
 
-describe('sandbox-service', () => {
-  it('default backend name is worker_thread_policy_enforcer', () => {
-    const backend = process.env.SANDBOX_BACKEND ?? 'worker_thread_policy_enforcer';
-    assert.equal(backend, 'worker_thread_policy_enforcer');
+describe('sandbox-service health smoke', () => {
+  it('H-08 Path B: default documented backend is worker_thread when unset', () => {
+    assert.equal(resolveSandboxBackendName({}), 'worker_thread');
+    const h = firecrackerHealth({});
+    assert.equal(h.firecrackerReady, false);
+    assert.equal(h.policy, 'worker_thread_only');
+    assert.equal(h.backend, 'worker_thread');
   });
 
   it('worker resourceLimits derive from memoryMiB request', () => {
     const memoryMiB = 512;
-    const memoryMb = Math.max(64, Math.ceil((memoryMiB * 1024 * 1024) / (1024 * 1024)));
+    const memoryMb = memoryLimitToMb(memoryMiB * 1024 * 1024);
     assert.equal(memoryMb, 512);
   });
 

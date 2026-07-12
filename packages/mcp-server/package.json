@@ -1,6 +1,7 @@
 {
   "name": "@vibrato/mcp-server",
   "version": "1.0.0",
+  "license": "MIT",
   "private": true,
   "description": "Vibrato MCP server — stdio transport for PGOS orchestrator",
   "type": "module",

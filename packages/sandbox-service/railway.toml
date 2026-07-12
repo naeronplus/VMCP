@@ -1,0 +1,28 @@
+# Vibrato PGOS — Railway service: extension sandbox control plane (M-08)
+# Deploy as a second service in the same Railway project as the orchestrator.
+# Root directory / watch path: packages/sandbox-service (or set Railway Root Directory).
+#
+# After deploy, set orchestrator env:
+#   SANDBOX_SERVICE_URL=http://${{sandbox.RAILWAY_PRIVATE_DOMAIN}}:${{sandbox.PORT}}
+#   SANDBOX_INTERNAL_TOKEN=<shared secret matching this service>
+# See docs/deploy/railway.md.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "node dist/index.js"
+healthcheckPath = "/health"
+healthcheckTimeout = 20
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
+
+[env]
+NODE_ENV = "production"
+# Required in production (see production-validation.ts):
+# SANDBOX_INTERNAL_TOKEN  — must match orchestrator; not the dev default
+# Optional Firecracker:
+# SANDBOX_BACKEND=firecracker
+# FIRECRACKER_SOCKET=/var/run/firecracker.sock
+# FIRECRACKER_LAUNCHER=...
