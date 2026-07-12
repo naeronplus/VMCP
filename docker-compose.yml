@@ -6,10 +6,13 @@
 #   # Point JWT_*_PATH in .env at those files (defaults already match)
 #   docker compose up --build
 #
+# DEP-03: orchestrator healthcheck hits GET /ready; sandbox hits GET /health.
+# Compose waits for service_healthy before dependents start (where declared).
+#
 # Commit-agent is NOT run in Compose — install on target hosts for cross-machine:
-#   cd packages/commit-agent && go build -o /usr/local/bin/commit-agent ./cmd/agent
-#   install bin/commit-agent-once (when shipped) and systemd unit under systemd/
-#   See packages/commit-agent/README.md and workers/README.md.
+#   bash packages/commit-agent/scripts/install.sh
+#   # or: COMMIT_AGENT_BIN=/opt/pgos/bin/commit-agent bash packages/commit-agent/scripts/install.sh
+#   See packages/commit-agent/README.md (DEP-02) and workers/README.md.
 #
 # Optional hot-reload profile (host-mounted source):
 #   docker compose --profile dev up
@@ -78,6 +81,7 @@ services:
 
   # Prod-like: full monorepo compile inside the container (no host dist/ required).
   # Builds shared + dashboard + orchestrator so resolveDashboardDist() finds static assets.
+  # DEP-03: healthcheck uses /ready (fails when Postgres/Redis down).
   orchestrator:
     image: node:20-bookworm
     working_dir: /app
@@ -101,6 +105,19 @@ services:
       S3_ACCESS_KEY_ID: minioadmin
       S3_SECRET_ACCESS_KEY: minioadmin
       SANDBOX_SERVICE_URL: http://sandbox:8090
+    healthcheck:
+      # DEP-03: /ready (not /health) — fails when Postgres/Redis down. Node fetch (no curl required).
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
     depends_on:
       npm-ci:
         condition: service_completed_successfully
@@ -111,7 +128,7 @@ services:
       minio-init:
         condition: service_completed_successfully
       sandbox:
-        condition: service_started
+        condition: service_healthy
 
   sandbox:
     image: node:20-bookworm
@@ -127,6 +144,18 @@ services:
       PORT: "8090"
       NODE_ENV: development
       SANDBOX_INTERNAL_TOKEN: dev-sandbox-token
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
     depends_on:
       npm-ci:
         condition: service_completed_successfully
@@ -156,6 +185,18 @@ services:
       S3_ACCESS_KEY_ID: minioadmin
       S3_SECRET_ACCESS_KEY: minioadmin
       SANDBOX_SERVICE_URL: http://sandbox-dev:8090
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8080/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
     depends_on:
       npm-ci:
         condition: service_completed_successfully
@@ -165,6 +206,8 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+      sandbox-dev:
+        condition: service_healthy
 
   sandbox-dev:
     profiles: ["dev"]
@@ -179,6 +222,18 @@ services:
       PORT: "8090"
       NODE_ENV: development
       SANDBOX_INTERNAL_TOKEN: dev-sandbox-token
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8090/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 45s
     depends_on:
       npm-ci:
         condition: service_completed_successfully
