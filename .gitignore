@@ -23,3 +23,7 @@ tmp/
 secrets/
 .godot-cache/
 REMEDIATION_BASELINE.md
+# Local agent / MCP session artifacts (not product source)
+agent-tools/
+mcps/
+terminals/

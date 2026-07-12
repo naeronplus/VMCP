@@ -23,7 +23,16 @@
     "typecheck": "npm run typecheck -w @vibrato/shared && npm run typecheck -w @vibrato/orchestrator && npm run typecheck -w @vibrato/dashboard && npm run typecheck -w @vibrato/sandbox-service && npm run typecheck -w @vibrato/mcp-server",
     "lint": "npm run lint -w @vibrato/shared && npm run lint -w @vibrato/orchestrator && npm run lint -w @vibrato/dashboard && npm run lint -w @vibrato/sandbox-service && npm run lint -w @vibrato/mcp-server",
     "db:migrate": "npm run db:migrate -w @vibrato/orchestrator",
-    "agent:build": "cd packages/commit-agent && go build -o bin/commit-agent ./cmd/agent"
+    "agent:build": "cd packages/commit-agent && go build -o bin/commit-agent ./cmd/agent",
+    "verify:r0": "node scripts/verify-r0-regression.mjs",
+    "verify:r1": "node scripts/verify-r1-critical-blockers.mjs",
+    "verify:r2": "node scripts/verify-r2-high-partial-completion.mjs",
+    "verify:r3": "node scripts/verify-r3-test-ci-expansion.mjs",
+    "verify:r4": "node scripts/verify-r4-security-deployment.mjs",
+    "verify:r5": "node scripts/verify-r5-medium-low-hygiene.mjs",
+    "verify:r6": "node scripts/verify-r6-e2e-gate.mjs",
+    "verify:workflow-mirrors": "node scripts/verify-workflow-mirrors.mjs",
+    "e2e:cross-machine": "node scripts/run-cross-machine-e2e.mjs"
   },
   "engines": {
     "node": ">=20"

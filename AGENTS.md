@@ -8,6 +8,7 @@ Onboarding for agents and operators working with the **Procedural Generation Orc
 - **Push, not pull:** jobs are started with `workflow_dispatch`.
 - **Artifacts:** all worker inputs/outputs go through **S3**. Railway volumes are orchestrator-local cache only.
 - **Locks:** Redis is source of truth for lock validity; Postgres `lock_fencing_seq` is the authoritative fencing ledger for commits.
+- **Redis failover (M-17):** `LockService.rotateInstanceIdOnFailover` rotates the composite-token `instanceId` **and** INSERTs `lock_fencing_seq` rows with `reason='FAILOVER'` (per active `pg_locks` key + sentinel `pgos:system:redis-failover`). `validateFencingToken` rejects when the latest reason is `FAILOVER` (or instanceId mismatches). Holders must re-acquire.
 
 ## Headless Godot setup
 
@@ -51,7 +52,7 @@ Nightly reconciliation (`pgos-uid-reconcile` worker):
 1. Finds duplicate UIDs in `uid_mappings` (canonical = OVRD- or newest).
 2. When `project_root` is readable on the orchestrator, scans `.tscn`/`.tres`/`.import`/… for `uid://` tokens and rewrites full tokens only.
 3. Runs headless Godot reimport when files change; failures raise **E008** for manual review.
-4. When files live only on a remote host, use `workers/scripts/uid-reconcile.sh <project_root> <map.json>` on that host (orchestrator audits `mode: remote_script`).
+4. When files live only on a remote host **and** project `metadata.targetHost` (and optionally `targetProvisionUrl` / `uidReconcileUrl`) is set, nightly reconcile **auto-dispatches** `uid_reconcile.yml` with a replacements map on S3 (`mode: remote_dispatched`). Without host metadata, the orchestrator audits `mode: remote_script` for manual `workers/scripts/uid-reconcile.sh`.
 
 ## Common pitfalls
 
@@ -70,7 +71,7 @@ Overrides applied via `POST /merge` perform structural merge when enabled (`PGOS
 4. Never invent new executable scripts from operator-tier patches.
 5. **Apply modes:**
    - `local_fs` (auto when `project_root` is readable): atomic write of merged `.tscn` + override row + content hash.
-   - `outbox`: override row + `merge_outbox` pending row for host-side apply when the tree is not on the orchestrator.
+   - `outbox`: override row + `merge_outbox` pending row when the tree is not on the orchestrator. **Automatic consumer** (`pgos-merge-outbox` every 5m): applies locally when root becomes readable, otherwise dispatches `merge_apply.yml` (Tier A) with patch on S3. Host reports `POST /api/v1/merge-outbox/:id/complete` → `status=applied`. Not a manual outbox.
    - Force with `PGOS_MERGE_MODE=local_fs|outbox|auto|registry_only`.
 
 ### Example
@@ -98,7 +99,7 @@ Patch with script property → admin only (E019)
 
 ## Error deep links
 
-All codes E001–E020 document operator actions under `/docs/errors/{code}` and the dashboard **Error catalog** page.
+All codes E001–E021 document operator actions under `/docs/errors/{code}` and the dashboard **Error catalog** page (E019 = script override admin only; E021 = invalid job status transition).
 
 ## Callback protocol
 

@@ -10,11 +10,26 @@ Railway-first distributed system for **transactional, auditable** Godot asset/sc
 | `packages/sandbox-service` | Extension execution control plane (Firecracker-ready) |
 | `packages/mcp-server` | Stdio MCP transport (`vibrato-mcp`) proxying PGOS REST |
 | `packages/commit-agent` | Go minimal privileged agent for cross-machine atomic rename |
+| `packages/target-provisioner` | Go JIT SSH provisioner on Godot target hosts (DEP-01) |
 | `workers/` | GitHub Actions workflows + Godot worker scripts |
 | `docs/errors/` | Deep-linked error code documentation |
 
 **MCP name:** Vibrato  
-**License:** MIT (Godot-compatible tooling; no editor licensing gate)
+**License:** [MIT](./LICENSE) (Godot-compatible tooling; no editor licensing gate)
+
+## Repository (L-11)
+
+CI runs on every **push** to `main`/`master` and on **pull requests** (`.github/workflows/ci.yml`).
+
+```bash
+# After creating an empty hosting repo:
+export PGOS_GIT_ORIGIN='https://github.com/<org>/<repo>.git'
+bash scripts/configure-git-remote.sh
+# Optional first push (requires network + credentials):
+# PGOS_GIT_PUSH=1 bash scripts/configure-git-remote.sh
+```
+
+Branch protection (require CI green, disallow force-push): see [`docs/deploy/git-hosting.md`](./docs/deploy/git-hosting.md).
 
 ## Principles
 
@@ -30,7 +45,7 @@ Railway-first distributed system for **transactional, auditable** Godot asset/sc
 
 - Node.js 20+ (see `.nvmrc`)
 - Docker + Compose (Postgres, Redis, MinIO, optional full app stack)
-- Go 1.22+ (commit-agent)
+- Go 1.22+ (commit-agent + target-provisioner)
 - Optional: Godot 4.3+ for worker scripts
 
 ### Option A — Full stack via Docker Compose (recommended fresh clone)
@@ -46,11 +61,13 @@ bash scripts/generate-jwt-keys.sh
 docker compose up --build
 ```
 
+Compose **waits for healthy services** (DEP-03): orchestrator `GET /ready`, sandbox `GET /health` (10s interval). Dependents use `condition: service_healthy` where applicable.
+
 - API + dashboard: http://localhost:8080  
 - Sandbox: http://localhost:8090  
 - MinIO console: http://localhost:9001 (minioadmin / minioadmin)
 
-**Commit-agent** is not a Compose service (privileged host agent). Install on target machines; see `packages/commit-agent/README.md` and comments in `docker-compose.yml`.
+**Commit-agent** and **target-provisioner** are not Compose services (run on Godot target hosts). Install on targets with `bash packages/commit-agent/scripts/install.sh` (DEP-02); see `packages/commit-agent/README.md`, `packages/target-provisioner/README.md`, and `docker-compose.yml` comments. Cross-machine metadata: `targetHost` + `targetProvisionUrl`; orchestrator env `PGOS_PROVISION_TOKEN` (SEC-02) and optional mTLS PEMs (SEC-01).
 
 Hot-reload (dev profile):
 
@@ -115,42 +132,86 @@ npm run lint        # tsc --noEmit on shared, orchestrator, dashboard, sandbox-s
 
 ## Railway deployment
 
-1. Create Railway project with **Postgres** and **Redis** plugins.
-2. Set environment variables from `.env.example` (use RS256 JWT keys in production).
-3. Attach S3-compatible storage (AWS S3, R2, MinIO).
-4. Deploy from repo root (`railway.toml` build/start commands). Root `npm run build` includes mcp-server; production start runs the orchestrator workspace.
-5. Configure GitHub App: `actions:write` (dispatch), `actions:read` (poll runs).
-6. Store `PGOS_BASE_URL` and tokens as GitHub Actions secrets for worker workflows.
+**Two services are required** (M-08): **orchestrator** (this repo root `railway.toml`) and **sandbox-service** (`packages/sandbox-service/railway.toml`). A single Railway service leaves extensions without a real execution plane.
+
+Full guide: **[docs/deploy/railway.md](./docs/deploy/railway.md)**.
+
+### Deploy checklist
+
+1. Create Railway project with **Postgres** and **Redis** plugins (attach to orchestrator).
+2. Set orchestrator env from `.env.example` (RS256 JWT keys, `JWE_SECRET`, GitHub App, S3, `PUBLIC_BASE_URL`, bootstrap admin password when needed).
+3. Deploy **orchestrator** from repo root (`npm ci && npm run build`; start migrates DB then runs `@vibrato/orchestrator`).
+4. Confirm Railway **healthcheck** is **`/ready`** (not `/health`) — root `railway.toml` sets `healthcheckPath = "/ready"` (M-09). `/ready` returns **503** if Postgres or Redis is down; `/health` is liveness-only.
+5. Deploy **sandbox** as a second service (root directory `packages/sandbox-service`, Dockerfile). Set `SANDBOX_INTERNAL_TOKEN` (not the dev default).
+6. **Wire** orchestrator → sandbox (required):
+   ```text
+   SANDBOX_SERVICE_URL=http://${{sandbox.RAILWAY_PRIVATE_DOMAIN}}:${{sandbox.PORT}}
+   SANDBOX_INTERNAL_TOKEN=<same secret as sandbox service>
+   ```
+   (Adjust service name to match Railway UI.) Redeploy orchestrator after setting these.
+7. Attach S3-compatible storage (AWS S3, R2, MinIO) on orchestrator.
+8. Configure GitHub App: `actions:write` (dispatch), `actions:read` (poll runs).
+9. Store `PGOS_BASE_URL` and tokens as GitHub Actions secrets for worker workflows.
+10. Smoke: `curl -sS "$PUBLIC_BASE_URL/ready"` → `{"ok":true}`; exercise an extension execute once.
+
+Local dual-service reference (Compose already sets `SANDBOX_SERVICE_URL=http://sandbox:8090`):
+
+```bash
+docker compose up --build
+curl -sS http://localhost:8080/ready
+curl -sS http://localhost:8090/health
+```
 
 ## API surface (selected)
 
+Roles use minimum rank (`requireRole`) unless marked **exact** (`requireExactRole`). Exact roles reject higher ranks (e.g. operator JWT cannot call callback-only routes).
+
 | Method | Path | Role | Purpose |
 |--------|------|------|---------|
-| POST | `/api/v1/jobs` | operator | Create generation job |
-| PATCH | `/api/v1/jobs/:id/status` | callback/operator | Lifecycle updates |
-| PATCH | `/api/v1/jobs/:id/heartbeat` | callback | 15s liveness |
-| GET | `/api/v1/locks` | viewer | Active locks + fencing tokens |
-| POST | `/api/v1/locks/reclaim` | admin | Force reclaim + new token |
-| POST | `/api/v1/projects/:id/uid-reservations` | operator | Concurrent UID reservation |
-| POST | `/api/v1/resolve-secret` | dispatch JWE | Single-use secret exchange (callback embedded in JWE) |
-| POST | `/api/v1/execute-extension` | operator | Sandboxed extension proxy |
-| POST | `/api/v1/merge` | operator | Override merge (script → admin) |
+| POST | `/api/v1/jobs` | operator+ | Create generation job |
+| GET | `/api/v1/jobs` | viewer+ | List jobs |
+| GET | `/api/v1/jobs/:id` | viewer+ | Job detail |
+| PATCH | `/api/v1/jobs/:id/status` | **callback only** (exact) | Worker lifecycle updates — job-scoped callback token; not usable by operator/admin JWT |
+| PATCH | `/api/v1/jobs/:id/heartbeat` | **callback only** (exact) | 15s liveness — same token scope as status; fencing reject → **E013** (L-01) |
+| GET | `/api/v1/dead-letter` | operator+ | Inspect dead-letter queue |
+| POST | `/api/v1/dead-letter/:jobId/retry` | admin | Re-queue a dead-lettered job |
+| GET | `/api/v1/locks` | viewer+ | Active locks + fencing tokens |
+| GET | `/api/v1/locks/:lockKey/history` | viewer+ | Lock fencing history |
+| POST | `/api/v1/locks/reclaim` | admin | Force reclaim + new fencing token; affected jobs redispatched or dead-lettered |
+| POST | `/api/v1/locks/validate-token` | operator+ | Commit-agent fencing validation |
+| POST | `/api/v1/projects/:id/uid-reservations` | operator+ | Concurrent UID reservation |
+| POST | `/api/v1/resolve-secret` | dispatch JWE | Single-use secret exchange; 404 → `{ error: { code: 'SECRET_NOT_FOUND' } }` (L-02; not E007) |
+| POST | `/api/v1/execute-extension` | operator+ | Sandboxed extension proxy |
+| POST | `/api/v1/merge` | operator+ | Override merge (script patches → admin, E019) |
 | GET | `/ws` | auth | Real-time job events |
+
+### Operator / admin job intervention (not via `PATCH .../status`)
+
+Workers alone advance lifecycle through `PATCH /jobs/:id/status` with a short-lived **callback** token (`requireExactRole('callback')` in `routes/jobs.ts`). Operators and admins **cannot** PATCH status; they use:
+
+| Need | Endpoint | Role |
+|------|----------|------|
+| Create / enqueue work | `POST /api/v1/jobs` | operator+ |
+| Unstick a held lock / stale job | `POST /api/v1/locks/reclaim` | admin |
+| Inspect failed max-attempt jobs | `GET /api/v1/dead-letter` | operator+ |
+| Retry after remediation | `POST /api/v1/dead-letter/:jobId/retry` | admin |
+| Read job state / errors | `GET /api/v1/jobs`, `GET /api/v1/jobs/:id`, `GET /api/v1/jobs/errors/search` | viewer+ |
+| Dashboard | operator UI (same APIs) | role-gated nav |
 
 ## Acceptance criteria mapping
 
 | Criterion | Implementation |
 |-----------|----------------|
-| Fencing under Redis failover | `LockService.rotateInstanceIdOnFailover`, composite tokens, validate rejects old `instanceId` |
+| Fencing under Redis failover | `rotateInstanceIdOnFailover` + `lock_fencing_seq` **FAILOVER** rows (M-17); validate rejects old instanceId and `reason=FAILOVER` |
 | Cross-machine crash recovery | commit-agent idempotent rename + pending sidecar |
-| Reimport retries | `workers/scripts/run-generation.sh` backoff 10s/30s, max 2 |
+| Reimport retries | Orchestrator `REIMPORT_TIMEOUT_MS` / `REIMPORT_MAX_RETRIES` (L-05) → JWE → worker `REIMPORT_*`; `run-generation.sh` backoff 10s/30s |
 | UID concurrency | `UidService.reserve` advisory + row lock |
-| Nightly UID reconcile | BullMQ `pgos-uid-reconcile` + file scan/rewrite when `project_root` local; `uid-reconcile.sh` on remote hosts |
-| Extension sandbox | `sandbox-service` network deny-by-default; Firecracker `FIRECRACKER_LAUNCHER_MODE=stub\|real` fail-closed in production |
+| Nightly UID reconcile | BullMQ `pgos-uid-reconcile` + local file rewrite; remote auto-dispatch `uid_reconcile.yml` when `metadata.targetHost` set (H-03) |
+| Extension sandbox | `sandbox-service` network deny-by-default; **production default `SANDBOX_BACKEND=worker_thread`** (H-08 Path B); Firecracker real optional + fail-closed if advertised |
 | dependsOnJobId ordering | Create/dispatch/promote gates (BLOCKED until COMPLETED; E011 on dep failure) |
-| Structural `.tscn` merge | `POST /merge` local FS write or merge_outbox; script patches require admin (E019) |
+| Structural `.tscn` merge | `POST /merge` local FS or merge_outbox; **consumer applies/dispatches** every 5m (H-02); script patches require admin (E019) |
 | Tier parity | `parity_canary.yml` + dashboard |
-| Dead-letter 24/72h | `dead-letter-escalate` worker |
+| Dead-letter 24/72h | Consumer emails project `admin_contacts` (+ `ADMIN_EMAIL` CC); hourly 24h/72h escalate |
 | Token revocation | Redis set + Postgres `token_revocations` |
 | Path traversal | `@vibrato/shared` `assertWithinBase` |
 | Script override | `patchIntroducesScript` requires admin |
@@ -175,7 +236,7 @@ npm run build
 ## Security notes
 
 - Production **must** use RS256 JWT key pair (`JWT_PRIVATE_KEY` / `JWT_PUBLIC_KEY`).
-- Callback tokens expire in 5 minutes and are job-scoped.
+- Callback tokens expire in 5 minutes and are **job-scoped**. They are the **only** credential accepted on `PATCH /jobs/:id/status` and `PATCH /jobs/:id/heartbeat` (`requireExactRole('callback')` — operator/admin JWTs are rejected).
 - Sensitive worker material is never plain workflow inputs — JWE reference + single-use resolve.
 - Rate limiting is a Redis sliding window per principal.
 
@@ -189,11 +250,24 @@ PGOS_BASE_URL=http://localhost:8080 PGOS_API_TOKEN=<operator-jwt> npm run start 
 # or: npx vibrato-mcp   (after install/link; bin → packages/mcp-server/dist/index.js)
 ```
 
-Tools: `list_projects`, `list_jobs`, `get_job`, `get_job_status`, `create_job`, `list_locks`.
+Canonical tool names (`VIBRATO_TOOL_NAMES` in `packages/mcp-server/src/tool-schemas.ts` — keep README in sync):
+
+| Tool | Purpose |
+|------|---------|
+| `list_projects` | List projects |
+| `list_jobs` | List jobs (optional `projectId`) |
+| `get_job` | Full job record |
+| `create_job` | Enqueue generation |
+| `list_locks` | List locks |
+| `get_job_status` | Job status / progress |
 
 ## Documentation
 
+- [LICENSE](./LICENSE) — MIT
 - [AGENTS.md](./AGENTS.md) — Godot-specific agent guide
-- [workers/README.md](./workers/README.md) — GHA secrets & Tier A setup
+- [workers/README.md](./workers/README.md) — GHA secrets, cross-machine verbs, Tier A
+- [docs/e2e/cross-machine-e2e.md](./docs/e2e/cross-machine-e2e.md) — TEST-01 E2E gate (`npm run verify:r6`)
+- [docs/deploy/railway.md](./docs/deploy/railway.md) — Railway deploy
+- [docs/deploy/git-hosting.md](./docs/deploy/git-hosting.md) — git remote + branch protection (L-11)
 - [docs/errors/](./docs/errors/) — E001+ operator playbooks
 - Blueprint source: your Railway PGOS specification (sections 1–14)
