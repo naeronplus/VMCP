@@ -19,17 +19,22 @@ Railway-first distributed system for **transactional, auditable** Godot asset/sc
 
 ## Repository (L-11)
 
+**Clone:** https://github.com/naeronplus/VMCP.git  
+
 CI runs on every **push** to `main`/`master` and on **pull requests** (`.github/workflows/ci.yml`).
 
 ```bash
-# After creating an empty hosting repo:
-export PGOS_GIT_ORIGIN='https://github.com/<org>/<repo>.git'
+# Fresh clone
+git clone https://github.com/naeronplus/VMCP.git
+
+# Or wire origin from an existing working tree:
+export PGOS_GIT_ORIGIN='https://github.com/naeronplus/VMCP.git'
 bash scripts/configure-git-remote.sh
-# Optional first push (requires network + credentials):
+# Optional push (requires network + credentials):
 # PGOS_GIT_PUSH=1 bash scripts/configure-git-remote.sh
 ```
 
-Branch protection (require CI green, disallow force-push): see [`docs/deploy/git-hosting.md`](./docs/deploy/git-hosting.md).
+Branch protection on `main` (require CI status checks, no force-push, enforce admins): see [`docs/deploy/git-hosting.md`](./docs/deploy/git-hosting.md) and evidence `docs/remediation/L11-branch-protection.txt`.
 
 ## Principles
 
