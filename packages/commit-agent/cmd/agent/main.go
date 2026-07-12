@@ -1,12 +1,22 @@
-// Minimal privileged commit agent (§4.2).
-// Accepts only: commit <token> <source_temp_dir> <target_dir>
-// over Unix domain socket or as SSH forced command.
+// Privileged commit agent (§4.2).
+// ForcedCommand / -once verbs (no shell):
+//
+//	stage-receive <dest_dir> <sha256>     # tar.gz on stdin
+//	commit <token> <source> <target> [lockKey lockOwner [nonce]]
+//	reimport <project_path> <timeout_sec>
+//	restore <target_dir> [backup_path]   # tar.gz on stdin if no backup_path
+//
+// Over Unix domain socket: same argv-style or JSON commit protocol.
 package main
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -15,6 +25,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -30,26 +41,34 @@ import (
 const maxSocketLineBytes = 64 * 1024
 
 const (
-	cmdCommit = "commit"
+	cmdCommit       = "commit"
+	cmdStageReceive = "stage-receive"
+	cmdReimport     = "reimport"
+	cmdRestore      = "restore"
 )
 
+// validateTokenFn is swappable in tests.
+var validateTokenFn = defaultValidateToken
+
 type Config struct {
-	SocketPath      string
-	ProjectRoot     string
-	PGOSBaseURL     string
-	AuthToken       string
-	LockKey         string
-	Owner           string
-	NonceLogPath    string
-	AllowedStaging  string
+	SocketPath     string
+	ProjectRoot    string
+	PGOSBaseURL    string
+	AuthToken      string
+	LockKey        string
+	Owner          string
+	NonceLogPath   string
+	AllowedStaging string
 }
 
 type CommitRequest struct {
-	Token  string `json:"token"`
-	Source string `json:"source"`
-	Target string `json:"target"`
-	Nonce  string `json:"nonce"`
-	JobID  string `json:"jobId"`
+	Token    string `json:"token"`
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	Nonce    string `json:"nonce"`
+	JobID    string `json:"jobId"`
+	LockKey  string `json:"lockKey,omitempty"`
+	LockOwner string `json:"lockOwner,omitempty"`
 }
 
 type Agent struct {
@@ -63,12 +82,12 @@ type Agent struct {
 func main() {
 	socket := flag.String("socket", "/var/run/pgos-commit-agent.sock", "Unix domain socket path")
 	projectRoot := flag.String("project-root", "/var/godot/projects", "Allowed project root")
-	pgosURL := flag.String("pgos-url", "http://localhost:8080", "PGOS base URL")
+	pgosURL := flag.String("pgos-url", envOr("PGOS_URL", "http://localhost:8080"), "PGOS base URL")
 	authToken := flag.String("auth-token", os.Getenv("PGOS_AGENT_TOKEN"), "Bearer token for fencing validation")
 	lockKey := flag.String("lock-key", "", "Default lock key (optional override per request via env)")
 	owner := flag.String("owner", "", "Default lock owner")
 	nonceLog := flag.String("nonce-log", "/var/lib/pgos-agent/nonces.log", "Persistent nonce log")
-	once := flag.String("once", "", "Run single command line: commit <token> <src> <dst>")
+	once := flag.String("once", "", "Run single command line (SSH ForcedCommand mode)")
 	flag.Parse()
 
 	cfg := Config{
@@ -82,8 +101,6 @@ func main() {
 		AllowedStaging: "/tmp",
 	}
 
-	// syslog is Unix-only; on Windows (and when syslog unavailable) use stderr.
-	// Production Linux systemd units still capture journal via stdout/stderr.
 	slog := log.New(os.Stderr, "pgos-commit-agent: ", log.LstdFlags)
 	if runtime.GOOS != "windows" {
 		if sysw, err := trySyslog(); err == nil {
@@ -100,24 +117,14 @@ func main() {
 	a.loadNonceLog()
 
 	if *once != "" {
-		// SSH forced command mode
-		parts := strings.Fields(*once)
-		if len(os.Args) > 1 && flag.NArg() > 0 {
-			parts = flag.Args()
-		}
-		// Also accept full command from SSH_ORIGINAL_COMMAND
-		if soc := os.Getenv("SSH_ORIGINAL_COMMAND"); soc != "" {
-			parts = strings.Fields(soc)
-		}
-		if len(parts) == 0 {
-			parts = strings.Fields(*once)
-		}
+		// SSH ForcedCommand / commit-agent-once mode (prefer SSH_ORIGINAL_COMMAND)
+		parts := resolveOnceParts(*once)
 		code, msg := a.handleArgs(parts)
+		// reimport already streamed logs to stdout; still print status line
 		fmt.Fprintln(os.Stdout, msg)
 		os.Exit(code)
 	}
 
-	// Recover incomplete renames after crash (§4.2.1 failure recovery)
 	a.recoverPendingRenames()
 
 	_ = os.Remove(cfg.SocketPath)
@@ -154,6 +161,23 @@ func main() {
 	}
 }
 
+func envOr(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+func resolveOnceParts(onceFlag string) []string {
+	if soc := os.Getenv("SSH_ORIGINAL_COMMAND"); soc != "" {
+		return strings.Fields(soc)
+	}
+	if flag.NArg() > 0 {
+		return flag.Args()
+	}
+	return strings.Fields(onceFlag)
+}
+
 func (a *Agent) handleConn(conn net.Conn) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
@@ -164,7 +188,6 @@ func (a *Agent) handleConn(conn net.Conn) {
 		return
 	}
 	line = strings.TrimSpace(line)
-	// Support JSON protocol or argv-style
 	if strings.HasPrefix(line, "{") {
 		var req CommitRequest
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
@@ -192,23 +215,271 @@ func (a *Agent) handleArgs(parts []string) (int, string) {
 	if len(parts) < 1 {
 		return 1, "empty command"
 	}
-	if parts[0] != cmdCommit {
-		return 1, "only 'commit' is allowed"
+	switch parts[0] {
+	case cmdCommit:
+		return a.handleCommitArgs(parts)
+	case cmdStageReceive:
+		return a.handleStageReceive(parts)
+	case cmdReimport:
+		return a.handleReimport(parts)
+	case cmdRestore:
+		return a.handleRestore(parts)
+	default:
+		return 1, "unknown verb (allowed: stage-receive, commit, reimport, restore)"
 	}
-	if len(parts) != 4 {
-		return 1, "usage: commit <token> <source_temp_dir> <target_dir>"
+}
+
+func (a *Agent) handleCommitArgs(parts []string) (int, string) {
+	// commit <token> <source> <target> [lockKey lockOwner [nonce]]
+	if len(parts) != 4 && len(parts) != 6 && len(parts) != 7 {
+		return 1, "usage: commit <token> <source_temp_dir> <target_dir> [lockKey lockOwner [nonce]]"
 	}
-	return a.doCommit(CommitRequest{
+	req := CommitRequest{
 		Token:  parts[1],
 		Source: parts[2],
 		Target: parts[3],
 		Nonce:  os.Getenv("PGOS_COMMIT_NONCE"),
 		JobID:  os.Getenv("PGOS_JOB_ID"),
+	}
+	if len(parts) >= 6 {
+		req.LockKey = parts[4]
+		req.LockOwner = parts[5]
+	}
+	if len(parts) == 7 {
+		req.Nonce = parts[6]
+	}
+	return a.doCommit(req)
+}
+
+func (a *Agent) handleStageReceive(parts []string) (int, string) {
+	if len(parts) != 3 {
+		return 1, "usage: stage-receive <dest_dir> <sha256>"
+	}
+	dest, err := paths.ValidateStagingDest(parts[1], a.cfg.AllowedStaging)
+	if err != nil {
+		return 1, err.Error()
+	}
+	wantSum := strings.ToLower(strings.TrimSpace(parts[2]))
+	if len(wantSum) != 64 {
+		return 1, "sha256 must be 64 hex chars"
+	}
+
+	archivePath := filepath.Join(a.cfg.AllowedStaging, fmt.Sprintf("stage-recv-%d.tar.gz", time.Now().UnixNano()))
+	af, err := os.OpenFile(archivePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return 1, "create archive temp: " + err.Error()
+	}
+	h := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(af, h), os.Stdin); err != nil {
+		af.Close()
+		_ = os.Remove(archivePath)
+		return 1, "read stdin: " + err.Error()
+	}
+	if err := af.Close(); err != nil {
+		_ = os.Remove(archivePath)
+		return 1, err.Error()
+	}
+	defer os.Remove(archivePath)
+
+	got := hex.EncodeToString(h.Sum(nil))
+	if got != wantSum {
+		return 1, fmt.Sprintf("checksum mismatch got=%s want=%s", got, wantSum)
+	}
+
+	_ = os.RemoveAll(dest)
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return 1, "mkdir dest: " + err.Error()
+	}
+	rf, err := os.Open(archivePath)
+	if err != nil {
+		_ = os.RemoveAll(dest)
+		return 1, err.Error()
+	}
+	defer rf.Close()
+	if err := extractTarGz(rf, dest); err != nil {
+		_ = os.RemoveAll(dest)
+		return 1, "extract: " + err.Error()
+	}
+	a.slog.Printf("stage-receive ok dest=%s", dest)
+	return 0, "staged " + dest
+}
+
+func extractTarGz(r io.Reader, dest string) error {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		// Refuse absolute paths and traversal
+		name := filepath.Clean(hdr.Name)
+		if strings.HasPrefix(name, "..") || filepath.IsAbs(name) {
+			return fmt.Errorf("unsafe tar entry: %s", hdr.Name)
+		}
+		target := filepath.Join(dest, name)
+		if !strings.HasPrefix(target, dest+string(filepath.Separator)) && target != dest {
+			return fmt.Errorf("tar entry escapes dest: %s", hdr.Name)
+		}
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)|0o600)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				return err
+			}
+			f.Close()
+		default:
+			// skip other types
+		}
+	}
+}
+
+func (a *Agent) handleReimport(parts []string) (int, string) {
+	if len(parts) != 3 {
+		return 1, "usage: reimport <project_path> <timeout_sec>"
+	}
+	projectPath, err := paths.ValidateTarget(parts[1], a.cfg.ProjectRoot)
+	if err != nil {
+		return 1, err.Error()
+	}
+	var timeoutSec int
+	if _, err := fmt.Sscanf(parts[2], "%d", &timeoutSec); err != nil || timeoutSec <= 0 {
+		return 1, "timeout_sec must be positive integer"
+	}
+
+	godotBin := os.Getenv("GODOT_BIN")
+	if godotBin == "" {
+		godotBin = "godot"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, godotBin, "--headless", "--editor", "--quit", "--path", projectPath)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	err = cmd.Run()
+	// Always stream log to stdout for the worker to capture
+	fmt.Fprint(os.Stdout, buf.String())
+	if ctx.Err() == context.DeadlineExceeded {
+		return 1, "reimport timeout"
+	}
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			return ee.ExitCode(), "reimport failed"
+		}
+		return 1, "reimport error: " + err.Error()
+	}
+	return 0, "reimport ok"
+}
+
+func (a *Agent) handleRestore(parts []string) (int, string) {
+	// restore <target_dir> [backup_path]
+	if len(parts) != 2 && len(parts) != 3 {
+		return 1, "usage: restore <target_dir> [backup_path]"
+	}
+	target, err := paths.ValidateTarget(parts[1], a.cfg.ProjectRoot)
+	if err != nil {
+		return 1, err.Error()
+	}
+
+	if len(parts) == 3 {
+		backup, err := paths.ValidateBackupPath(parts[2], a.cfg.ProjectRoot, a.cfg.AllowedStaging)
+		if err != nil {
+			return 1, err.Error()
+		}
+		if _, err := os.Stat(backup); err != nil {
+			return 1, "backup missing: " + err.Error()
+		}
+		_ = os.RemoveAll(target)
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return 1, err.Error()
+		}
+		if err := os.Rename(backup, target); err != nil {
+			// fallback copy for cross-device
+			if err2 := copyDir(backup, target); err2 != nil {
+				return 1, "restore rename/copy failed: " + err2.Error()
+			}
+			_ = os.RemoveAll(backup)
+		}
+		return 0, "restored from backup"
+	}
+
+	// stdin tar.gz of previous project tree
+	tmp := filepath.Join(a.cfg.AllowedStaging, fmt.Sprintf("restore-%d", time.Now().UnixNano()))
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
+		return 1, err.Error()
+	}
+	defer os.RemoveAll(tmp)
+	if err := extractTarGz(os.Stdin, tmp); err != nil {
+		return 1, "extract restore archive: " + err.Error()
+	}
+	_ = os.RemoveAll(target)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return 1, err.Error()
+	}
+	if err := os.Rename(tmp, target); err != nil {
+		if err2 := copyDir(tmp, target); err2 != nil {
+			return 1, "restore place failed: " + err2.Error()
+		}
+	}
+	return 0, "restored from archive"
+}
+
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		out := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(out, info.Mode())
+		}
+		in, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+			return err
+		}
+		f, err := os.OpenFile(out, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(f, in)
+		closeErr := f.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
 	})
 }
 
 func (a *Agent) doCommit(req CommitRequest) (int, string) {
-	// Injection hardening: no shell; strict path validation
 	source, err := paths.ValidateStagingSource(req.Source)
 	if err != nil {
 		a.slog.Printf("reject source: %v token=%s", err, req.Token)
@@ -220,7 +491,6 @@ func (a *Agent) doCommit(req CommitRequest) (int, string) {
 		return 1, err.Error()
 	}
 
-	// Replay protection
 	nonce := req.Nonce
 	if nonce == "" {
 		nonce = req.JobID + ":" + req.Token
@@ -230,15 +500,24 @@ func (a *Agent) doCommit(req CommitRequest) (int, string) {
 		return 1, "replay rejected"
 	}
 
-	// Validate fencing token against Postgres via PGOS
-	lockKey := a.cfg.LockKey
+	lockKey := req.LockKey
+	if lockKey == "" {
+		lockKey = a.cfg.LockKey
+	}
 	if lockKey == "" {
 		lockKey = os.Getenv("PGOS_LOCK_KEY")
 	}
-	owner := a.cfg.Owner
+	owner := req.LockOwner
+	if owner == "" {
+		owner = a.cfg.Owner
+	}
 	if owner == "" {
 		owner = os.Getenv("PGOS_LOCK_OWNER")
 	}
+	// Redacted audit: log owner/key lengths only
+	a.slog.Printf("fencing identity lockKeyLen=%d ownerLen=%d ownerPrefix=%s",
+		len(lockKey), len(owner), redactOwner(owner))
+
 	requireFencing := os.Getenv("PGOS_REQUIRE_FENCING") == "true" ||
 		os.Getenv("PGOS_REQUIRE_FENCING") == "1"
 	if requireFencing && (lockKey == "" || owner == "") {
@@ -246,7 +525,7 @@ func (a *Agent) doCommit(req CommitRequest) (int, string) {
 		return 1, "fencing validation required but PGOS_LOCK_KEY/PGOS_LOCK_OWNER not configured"
 	}
 	if lockKey != "" && owner != "" {
-		ok, err := a.validateToken(lockKey, owner, req.Token)
+		ok, err := validateTokenFn(a, lockKey, owner, req.Token)
 		if err != nil {
 			return 1, "token validation error: " + err.Error()
 		}
@@ -259,7 +538,6 @@ func (a *Agent) doCommit(req CommitRequest) (int, string) {
 	}
 
 	if _, err := os.Stat(source); err != nil {
-		// If source gone, rename may have already succeeded
 		if _, err2 := os.Stat(target); err2 == nil {
 			a.recordNonce(nonce)
 			a.slog.Printf("idempotent success (target exists, source gone) token=%s", req.Token)
@@ -268,7 +546,6 @@ func (a *Agent) doCommit(req CommitRequest) (int, string) {
 		return 1, "source does not exist"
 	}
 
-	// Pending sidecar for crash recovery (§4.2.1)
 	sidecarDir := filepath.Dir(source)
 	sidecarPath := filepath.Join(sidecarDir, ".pgos-pending-commit")
 	pending := req
@@ -282,8 +559,20 @@ func (a *Agent) doCommit(req CommitRequest) (int, string) {
 		return 1, "failed to write pending sidecar: " + err.Error()
 	}
 
-	// Atomic rename on same filesystem
-	backup := target + ".pgos-bak-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	// Retain job-scoped backup for post-commit rollback (C-03).
+	// S3 snapshot is primary; target.bak-{jobId} is secondary on the host.
+	jobID := req.JobID
+	if jobID == "" {
+		jobID = os.Getenv("PGOS_JOB_ID")
+	}
+	if jobID == "" {
+		jobID = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	backup := target + ".bak-" + jobID
+	// Remove previous bak for same job id if re-running; keep other jobs' baks
+	if _, err := os.Stat(backup); err == nil {
+		_ = os.RemoveAll(backup)
+	}
 	if _, err := os.Stat(target); err == nil {
 		if err := os.Rename(target, backup); err != nil {
 			_ = os.Remove(sidecarPath)
@@ -297,14 +586,22 @@ func (a *Agent) doCommit(req CommitRequest) (int, string) {
 		a.slog.Printf("rename failed token=%s err=%v", req.Token, err)
 		return 1, "rename failed: " + err.Error()
 	}
-	if _, err := os.Stat(backup); err == nil {
-		_ = os.RemoveAll(backup)
-	}
+	// Intentionally retain backup until next commit for this job path (post-commit verify).
 	_ = os.Remove(sidecarPath)
 
 	a.recordNonce(nonce)
-	a.slog.Printf("commit ok token=%s source=%s target=%s", req.Token, source, target)
-	return 0, "committed"
+	a.slog.Printf("commit ok token=%s source=%s target=%s backup=%s", req.Token, source, target, backup)
+	return 0, "committed backup=" + backup
+}
+
+func redactOwner(owner string) string {
+	if owner == "" {
+		return ""
+	}
+	if len(owner) <= 8 {
+		return owner[:1] + "***"
+	}
+	return owner[:8] + "…"
 }
 
 func readLimitedLine(r *bufio.Reader, max int) (string, error) {
@@ -327,7 +624,7 @@ func readLimitedLine(r *bufio.Reader, max int) (string, error) {
 	}
 }
 
-func (a *Agent) validateToken(lockKey, owner, token string) (bool, error) {
+func defaultValidateToken(a *Agent, lockKey, owner, token string) (bool, error) {
 	body, _ := json.Marshal(map[string]string{
 		"lockKey": lockKey,
 		"owner":   owner,
@@ -369,7 +666,6 @@ func (a *Agent) seenNonce(n string) bool {
 		return true
 	}
 	if a.bloom.Test([]byte(n)) {
-		// Possible false positive — check persistent log
 		return a.nonceInLog(n)
 	}
 	return false
@@ -410,7 +706,6 @@ func (a *Agent) nonceInLog(n string) bool {
 }
 
 func (a *Agent) recoverPendingRenames() {
-	// Scan /tmp for staging-* dirs with sidecar .pgos-pending-commit JSON
 	entries, err := os.ReadDir("/tmp")
 	if err != nil {
 		return

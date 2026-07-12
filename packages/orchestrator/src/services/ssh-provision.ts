@@ -4,9 +4,15 @@
  * Flow:
  * 1. Runner (or orchestrator) generates ed25519 keypair.
  * 2. Public key is POSTed to target provision endpoint (mTLS/VPN).
- * 3. Target writes single-use authorized_keys entry with forced command.
+ * 3. Target writes multi-session (TTL-bound) authorized_keys entry with:
+ *    - ForcedCommand=commit-agent-once
+ *    - environment="PGOS_LOCK_KEY=…,PGOS_LOCK_OWNER=job:…,…"
  * 4. Private key is sealed into JWE secret envelope for the worker.
- * 5. After one login (or TTL), public key is purged.
+ * 5. After TTL (or explicit revoke), public key is purged.
+ *
+ * Target provisioner MUST honor:
+ * - singleUse: false + maxSessions (multi round-trip: stage/commit/reimport/restore)
+ * - environment map → OpenSSH authorized_keys environment="K=V,K2=V2"
  */
 import crypto from 'node:crypto';
 import { generateKeyPairSync } from 'node:crypto';
@@ -19,6 +25,8 @@ export interface EphemeralSshKey {
   keyId: string;
   expiresAt: Date;
 }
+
+export type ProvisionEnvironment = Record<string, string>;
 
 export function generateEphemeralEd25519(): EphemeralSshKey {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
@@ -36,17 +44,22 @@ export function generateEphemeralEd25519(): EphemeralSshKey {
 }
 
 /**
- * Call target machine provisioning endpoint to install single-login authorized_keys.
+ * Call target machine provisioning endpoint to install TTL-bound authorized_keys.
  */
 export async function provisionPublicKey(opts: {
   targetProvisionUrl: string;
   publicKeyOpenSsh: string;
   forcedCommand: string;
   jobId: string;
+  environment?: ProvisionEnvironment;
+  maxSessions?: number;
+  ttlSeconds?: number;
   mtlsCert?: string;
   mtlsKey?: string;
 }): Promise<{ ok: boolean; detail?: string }> {
   const env = getEnv();
+  const ttlSeconds = opts.ttlSeconds ?? 300;
+  const maxSessions = opts.maxSessions ?? 8;
   try {
     const res = await fetch(opts.targetProvisionUrl, {
       method: 'POST',
@@ -58,23 +71,82 @@ export async function provisionPublicKey(opts: {
         publicKey: opts.publicKeyOpenSsh,
         forcedCommand: opts.forcedCommand,
         jobId: opts.jobId,
-        singleUse: true,
-        ttlSeconds: 300,
+        // Multi-session within TTL — ForcedCommand pipeline needs stage+commit+verify(+restore)
+        singleUse: false,
+        maxSessions,
+        ttlSeconds,
+        environment: opts.environment ?? {},
       }),
     });
     await audit({
       action: 'ssh.jit_provisioned',
       resourceType: 'job',
       resourceId: opts.jobId,
-      detail: { target: opts.targetProvisionUrl, status: res.status },
+      detail: {
+        target: opts.targetProvisionUrl,
+        status: res.status,
+        singleUse: false,
+        maxSessions,
+        ttlSeconds,
+        environmentKeys: Object.keys(opts.environment ?? {}),
+      },
     });
     if (!res.ok) {
       return { ok: false, detail: await res.text() };
     }
     return { ok: true };
   } catch (err) {
+    await audit({
+      action: 'ssh.jit_provisioned',
+      resourceType: 'job',
+      resourceId: opts.jobId,
+      detail: {
+        target: opts.targetProvisionUrl,
+        status: 0,
+        error: (err as Error).message,
+      },
+    });
     return { ok: false, detail: (err as Error).message };
   }
+}
+
+/**
+ * Decide whether cross-machine dispatch may proceed to SSH provision.
+ * Pure helper for unit tests + job-service.
+ */
+export function resolveCrossMachineProvision(
+  commitStrategy: string,
+  metadata: Record<string, unknown> | null | undefined,
+):
+  | { action: 'not-cross-machine' }
+  | { action: 'provision'; targetHost: string; provisionUrl: string }
+  | { action: 'fail'; detail: string } {
+  if (commitStrategy !== 'cross-machine') {
+    return { action: 'not-cross-machine' };
+  }
+  const targetHost = metadata?.targetHost;
+  const provisionUrl = metadata?.targetProvisionUrl;
+  const host =
+    typeof targetHost === 'string' && targetHost.trim() ? targetHost.trim() : '';
+  const url =
+    typeof provisionUrl === 'string' && provisionUrl.trim() ? provisionUrl.trim() : '';
+  if (!host && !url) {
+    return {
+      action: 'fail',
+      detail:
+        'cross-machine requires metadata.targetHost and metadata.targetProvisionUrl',
+    };
+  }
+  if (!host) {
+    return { action: 'fail', detail: 'cross-machine requires metadata.targetHost' };
+  }
+  if (!url) {
+    return {
+      action: 'fail',
+      detail: 'cross-machine requires metadata.targetProvisionUrl',
+    };
+  }
+  return { action: 'provision', targetHost: host, provisionUrl: url };
 }
 
 /**

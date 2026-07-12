@@ -24,3 +24,17 @@ func TestValidateTargetRejectsOutsideRoot(t *testing.T) {
 		t.Fatal("expected rejection outside project root")
 	}
 }
+
+func TestValidateStagingDest(t *testing.T) {
+	root := t.TempDir()
+	ok := filepath.Join(root, "staging-job1")
+	if _, err := ValidateStagingDest(ok, root); err != nil {
+		t.Fatalf("expected ok: %v", err)
+	}
+	if _, err := ValidateStagingDest(filepath.Join(root, "not-staging"), root); err == nil {
+		t.Fatal("expected basename reject")
+	}
+	if _, err := ValidateStagingDest(filepath.Join(root, "..", "staging-x"), root); err == nil {
+		t.Fatal("expected outside root reject")
+	}
+}

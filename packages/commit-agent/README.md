@@ -1,38 +1,65 @@
 # PGOS Commit Agent
 
-Minimal privileged agent for **cross-machine atomic commits** (§4.2).
+Minimal privileged agent for **cross-machine atomic commits** (§4.2) under **SSH ForcedCommand**.
 
-## Command surface
+## ForcedCommand protocol (C-00)
 
-Only one command is accepted (Unix socket or SSH forced command):
+Workers never use remote shell or `scp`. The JIT key uses:
 
 ```text
-commit <fencingToken> <source_temp_dir> <target_dir>
+command="commit-agent-once",no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty,environment="PGOS_LOCK_KEY=…,PGOS_LOCK_OWNER=job:…,PGOS_JOB_ID=…,PGOS_REQUIRE_FENCING=true" ssh-ed25519 AAAA… pgos-ephemeral
 ```
+
+### Verbs (`commit-agent -once` / `SSH_ORIGINAL_COMMAND`)
+
+| Verb | STDIN | Args | Behavior |
+|------|-------|------|----------|
+| `stage-receive` | tar.gz | `<dest_dir> <sha256>` | Extract under `/tmp/staging-*`, verify checksum |
+| `commit` | — | `<token> <source> <target> [lockKey lockOwner [nonce]]` | Fenced atomic rename; retains `target.bak-{jobId}` |
+| `reimport` | — | `<project_path> <timeout_sec>` | Headless Godot reimport (`GODOT_BIN`, default `godot`) |
+| `restore` | tar.gz **or** — | `<target_dir> [backup_path]` | Replace target from stdin archive or local backup |
+
+Unknown verbs are rejected (no shell).
+
+## Install
+
+```bash
+cd packages/commit-agent
+go build -o /usr/local/bin/commit-agent ./cmd/agent
+install -m 0755 bin/commit-agent-once /usr/local/bin/commit-agent-once
+# wrapper:
+#   #!/usr/bin/env bash
+#   exec /usr/local/bin/commit-agent -once "${SSH_ORIGINAL_COMMAND:-$*}"
+```
+
+### Target host requirements
+
+- Godot matching job `godotVersion` on `PATH` or `GODOT_BIN`
+- Project root under `--project-root` (default `/var/godot/projects`)
+- Provision endpoint must install keys with:
+  - `singleUse: false`
+  - `maxSessions: 8` (or similar)
+  - `ttlSeconds: 300`
+  - `environment` map → OpenSSH `environment="K=V,…"`
+  - `forcedCommand: commit-agent-once`
 
 ## Security
 
 | Control | Implementation |
 |---------|----------------|
-| No shell | Argument parsing only — never `exec` of user strings via shell |
-| Source path | Must be under `staging-*` temp directory |
-| Target path | Must be under configured `--project-root` |
-| Fencing token | Validated against PGOS `POST /api/v1/locks/validate-token` (Postgres ledger) |
-| Replay | In-memory bloom filter + persistent nonce log |
-| Ephemeral SSH | JIT ed25519 keys provisioned by PGOS; single-login `authorized_keys` |
-| Crash recovery | On restart, pending `.pgos-pending-commit` sidecars re-execute rename if token still valid |
+| No shell | Closed verb set only |
+| Source path | `staging-*` under allowed staging root |
+| Target path | Under configured `--project-root` |
+| Fencing token | `POST /api/v1/locks/validate-token` |
+| Lock identity | Process env (`environment=`) and/or commit args |
+| Replay | Bloom filter + persistent nonce log |
+| Crash recovery | `.pgos-pending-commit` sidecar |
 
-## Build
-
-```bash
-cd packages/commit-agent
-go build -o bin/commit-agent ./cmd/agent
-```
-
-## Run (systemd)
+## Run (systemd socket mode)
 
 ```ini
 [Service]
+Environment=PGOS_REQUIRE_FENCING=true
 ExecStart=/usr/local/bin/commit-agent \
   -socket /var/run/pgos-commit-agent.sock \
   -project-root /var/godot/projects \
@@ -40,13 +67,8 @@ ExecStart=/usr/local/bin/commit-agent \
   -auth-token ${PGOS_AGENT_TOKEN}
 ```
 
-## Docker
+Socket JSON protocol remains supported for local agent mode (`commit` only via JSON line).
 
-```bash
-docker run --network=host -v /var/godot/projects:/var/godot/projects \
-  pgos/commit-agent:latest
-```
+## Backup lifecycle (post-commit)
 
-## Secret rotation
-
-PGOS Railway cron every 90 days calls the target's `/rotate-secrets` endpoint (mutual TLS) to rotate agent certificates.
+On successful `commit`, previous target is moved to `target.bak-{jobId}` and **retained** so post-commit verify can `restore` if S3 snapshot is unavailable. Next commit for the same job id replaces that backup.

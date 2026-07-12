@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# SSH ForcedCommand entrypoint for PGOS cross-machine verbs.
+# Install next to commit-agent binary, typically /usr/local/bin/commit-agent-once
+set -euo pipefail
+exec /usr/local/bin/commit-agent -once "${SSH_ORIGINAL_COMMAND:-$*}"

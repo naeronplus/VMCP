@@ -24,6 +24,7 @@ import { mintCallbackToken, hashToken } from './auth-service.js';
 import {
   generateEphemeralEd25519,
   provisionPublicKey,
+  resolveCrossMachineProvision,
 } from './ssh-provision.js';
 import { audit } from './audit-service.js';
 import { sendAlert } from './alert-service.js';
@@ -137,6 +138,7 @@ export class JobService {
       'VALIDATION_FAILED',
       'COMMIT_FAILED',
       'DISPATCH_TIMEOUT',
+      'DISPATCH_FAILED',
     ];
     const { rows: activeJobs } = await getPool().query(
       `SELECT id, status FROM jobs
@@ -198,7 +200,8 @@ export class JobService {
     if (
       job.status !== 'QUEUED' &&
       job.status !== 'LOCK_STALE' &&
-      job.status !== 'DISPATCH_TIMEOUT'
+      job.status !== 'DISPATCH_TIMEOUT' &&
+      job.status !== 'DISPATCH_FAILED'
     ) {
       return;
     }
@@ -286,22 +289,47 @@ export class JobService {
       },
     };
 
-    if (job.commitStrategy === 'cross-machine') {
-      const targetHost = job.metadata?.targetHost as string | undefined;
-      const provisionUrl = job.metadata?.targetProvisionUrl as string | undefined;
-      if (targetHost && provisionUrl) {
-        const ssh = generateEphemeralEd25519();
-        const forcedCommand = `commit-agent-once`;
-        await provisionPublicKey({
-          targetProvisionUrl: provisionUrl,
-          publicKeyOpenSsh: ssh.publicKeyOpenSsh,
-          forcedCommand,
+    const cross = resolveCrossMachineProvision(job.commitStrategy, job.metadata);
+    if (cross.action === 'fail') {
+      await this.failDispatchPreStart({
+        jobId,
+        lockKey,
+        ownerId,
+        targetPathLockKey,
+        detail: cross.detail,
+      });
+      return;
+    }
+    if (cross.action === 'provision') {
+      const ssh = generateEphemeralEd25519();
+      const forcedCommand = 'commit-agent-once';
+      const provision = await provisionPublicKey({
+        targetProvisionUrl: cross.provisionUrl,
+        publicKeyOpenSsh: ssh.publicKeyOpenSsh,
+        forcedCommand,
+        jobId,
+        environment: {
+          PGOS_LOCK_KEY: lockKey,
+          PGOS_LOCK_OWNER: ownerId,
+          PGOS_JOB_ID: jobId,
+          PGOS_REQUIRE_FENCING: 'true',
+        },
+        maxSessions: 8,
+        ttlSeconds: 300,
+      });
+      if (!provision.ok) {
+        await this.failDispatchPreStart({
           jobId,
+          lockKey,
+          ownerId,
+          targetPathLockKey,
+          detail: `ssh provision failed: ${provision.detail ?? 'unknown'}`,
         });
-        envelopeBase.targetHost = targetHost;
-        envelopeBase.sshPrivateKey = ssh.privateKeyPem;
-        envelopeBase.sshKeyId = ssh.keyId;
+        return;
       }
+      envelopeBase.targetHost = cross.targetHost;
+      envelopeBase.sshPrivateKey = ssh.privateKeyPem;
+      envelopeBase.sshKeyId = ssh.keyId;
     }
 
     const { jwe } = await secretService.createEnvelope(jobId, envelopeBase);
@@ -368,6 +396,30 @@ export class JobService {
       type: 'job.updated',
       payload: updated,
       at: new Date().toISOString(),
+    });
+  }
+
+  /**
+   * Provision / pre-dispatch failure: release acquired locks, never embed SSH material,
+   * mark DISPATCH_FAILED (retriable). Must run before JWE creation / workflow dispatch.
+   */
+  private async failDispatchPreStart(opts: {
+    jobId: string;
+    lockKey: string;
+    ownerId: string;
+    targetPathLockKey?: string;
+    detail: string;
+  }): Promise<void> {
+    await lockService.release(opts.lockKey, opts.ownerId);
+    if (opts.targetPathLockKey) {
+      await lockService.release(opts.targetPathLockKey, opts.ownerId);
+    }
+    // Job is still QUEUED/LOCK_STALE/DISPATCH_* when provision runs (before DISPATCHING).
+    // updateStatus records E004 and runs handleFailure (retriable → requeue / dead-letter).
+    await this.updateStatus(opts.jobId, {
+      status: 'DISPATCH_FAILED',
+      errorCode: 'E004',
+      errorDetail: opts.detail,
     });
   }
 

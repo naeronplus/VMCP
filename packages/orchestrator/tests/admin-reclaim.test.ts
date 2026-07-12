@@ -19,6 +19,7 @@ describe('admin reclaim queue progression', () => {
     'VALIDATION_FAILED',
     'COMMIT_FAILED',
     'DISPATCH_TIMEOUT',
+    'DISPATCH_FAILED',
   ];
 
   it('LOCK_STALE is excluded from active job statuses that block new jobs', () => {
@@ -30,8 +31,13 @@ describe('admin reclaim queue progression', () => {
     assert.equal((JOB_STATUSES as readonly string[]).includes('LOCK_STALE'), true);
   });
 
-  it('dispatch-eligible statuses include LOCK_STALE and DISPATCH_TIMEOUT', () => {
-    const dispatchEligible = ['QUEUED', 'LOCK_STALE', 'DISPATCH_TIMEOUT'];
+  it('dispatch-eligible statuses include LOCK_STALE, DISPATCH_TIMEOUT, DISPATCH_FAILED', () => {
+    const dispatchEligible = [
+      'QUEUED',
+      'LOCK_STALE',
+      'DISPATCH_TIMEOUT',
+      'DISPATCH_FAILED',
+    ];
     for (const s of dispatchEligible) {
       assert.equal((JOB_STATUSES as readonly string[]).includes(s), true);
     }

@@ -43,6 +43,8 @@ jobs:
       SECRET_JWE: ${{ inputs.secretJwe }}
       REIMPORT_TIMEOUT_SEC: '300'
       REIMPORT_MAX_RETRIES: '2'
+      # Heartbeat every 15s; orchestrator HEARTBEAT_STALE_AFTER_MS defaults to 30000
+      HEARTBEAT_INTERVAL: '15'
 
     steps:
       - name: Checkout worker scripts
@@ -82,20 +84,16 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"status":"STAGING"}'
 
-      - name: Stage, reimport, validate
+      # C-01: single long step owns heartbeat PID through generate + commit + verify
+      - name: Execute job pipeline
         run: |
           set -euo pipefail
-          HEARTBEAT_PID=""
-          cleanup() {
-            if [[ -n "$HEARTBEAT_PID" ]]; then kill "$HEARTBEAT_PID" 2>/dev/null || true; fi
-          }
-          trap cleanup EXIT
-          bash workers/scripts/heartbeat.sh &
-          HEARTBEAT_PID=$!
+          # shellcheck source=workers/scripts/lib/pgos-lifecycle.sh
+          source workers/scripts/lib/pgos-lifecycle.sh
+          # shellcheck source=workers/scripts/lib/pgos-remote.sh
+          source workers/scripts/lib/pgos-remote.sh
+          pgos_heartbeat_trap
+          pgos_start_heartbeat
           bash workers/scripts/run-generation.sh
-
-      - name: Atomic commit
-        run: bash workers/scripts/atomic-commit.sh
-
-      - name: Post-commit reimport / rollback
-        run: bash workers/scripts/post-commit-verify.sh
+          bash workers/scripts/atomic-commit.sh
+          bash workers/scripts/post-commit-verify.sh

@@ -9,7 +9,9 @@ coverage/
 .DS_Store
 .turbo/
 *.tsbuildinfo
-packages/commit-agent/bin/
+# Built agent binaries (keep ForcedCommand wrapper tracked)
+packages/commit-agent/bin/*
+!packages/commit-agent/bin/commit-agent-once
 *.exe
 packages/dashboard/dist/
 .vite/

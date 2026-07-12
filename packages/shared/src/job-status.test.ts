@@ -15,6 +15,7 @@ describe('job status classification', () => {
       'VALIDATION_FAILED',
       'COMMIT_FAILED',
       'DISPATCH_TIMEOUT',
+      'DISPATCH_FAILED',
     ] as const) {
       assert.equal(isRetriableFailure(s), true);
       assert.equal(isTerminal(s), false);
@@ -55,5 +56,9 @@ describe('job status classification', () => {
     assert.equal(canTransitionJobStatus('STAGING', 'COMMITTING'), false);
     assert.equal(canTransitionJobStatus('LOCK_STALE', 'QUEUED'), true);
     assert.equal(canTransitionJobStatus('COMPLETED', 'QUEUED'), false);
+    assert.equal(canTransitionJobStatus('QUEUED', 'DISPATCH_FAILED'), true);
+    assert.equal(canTransitionJobStatus('DISPATCH_FAILED', 'QUEUED'), true);
+    assert.equal(canTransitionJobStatus('LOCK_STALE', 'DISPATCH_FAILED'), true);
+    assert.equal(canTransitionJobStatus('DISPATCHING', 'DISPATCH_FAILED'), true);
   });
 });
