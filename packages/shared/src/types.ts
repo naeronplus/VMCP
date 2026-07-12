@@ -275,6 +275,10 @@ export interface SecretEnvelope {
   s3SessionToken?: string;
   sshPrivateKey?: string;
   sshKeyId?: string;
+  /** L-05: orchestrator REIMPORT_TIMEOUT_MS → worker REIMPORT_TIMEOUT_SEC */
+  reimportTimeoutSec?: number;
+  /** L-05: orchestrator REIMPORT_MAX_RETRIES */
+  reimportMaxRetries?: number;
   presignedUrls?: SecretPresignedUrls;
   expiresAt: string;
 }

@@ -187,6 +187,16 @@ export const ERROR_CATALOG = {
     docsPath: '/api/v1/docs/errors/E020',
     httpStatus: 500,
   },
+  /** M-02: invalid job FSM transitions — never reuse E019 for this. */
+  E021: {
+    code: 'E021',
+    class: 'INVALID_STATUS_TRANSITION',
+    severity: 'medium' as const,
+    operatorAction:
+      'Requested job status is not allowed from the current state; check worker callback order and FSM.',
+    docsPath: '/api/v1/docs/errors/E021',
+    httpStatus: 409,
+  },
 } as const satisfies Record<string, ErrorDefinition>;
 
 export type ErrorCode = keyof typeof ERROR_CATALOG;
