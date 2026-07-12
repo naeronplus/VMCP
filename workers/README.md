@@ -79,9 +79,25 @@ Job metadata **must** include both `targetHost` and `targetProvisionUrl` or disp
 - Break-glass only: `PGOS_REMOTE_VERIFY=0` (unsafe — validates runner FS).  
 - Rollback: S3 snapshot archive via `restore` stdin, else `target.bak-{jobId}` on host.
 
-### Ephemeral key cleanup (H-11)
+### Ephemeral SSH key cleanup (H-11)
 
-`atomic-commit.sh` / `post-commit-verify.sh` trap `pgos_cleanup_ssh_key` → shred/remove `/tmp/pgos-ssh-key-${JOB_ID}`.
+Cross-machine jobs receive a short-lived ed25519 private key in the JWE envelope.
+
+| Stage | Behavior |
+|-------|----------|
+| `resolve-secrets.sh` | Writes `/tmp/pgos-ssh-key-${JOB_ID}` mode `600`; **never** puts PEM in `GITHUB_ENV` or logs |
+| `pgos_ssh_opts` | Uses key file; registers `EXIT`/`ERR`/`INT`/`TERM` cleanup trap |
+| `atomic-commit.sh` | On **failure**, secure-deletes key; on **successful** cross-machine commit, sets `PGOS_SSH_KEEP_KEY=1` so post-commit can reimport/restore |
+| `post-commit-verify.sh` | Always secure-deletes key on exit (success or failure) |
+| Pipeline `pgos_heartbeat_trap` | Final safety-net cleanup at end of the long GHA step |
+
+Secure delete: `shred -u -z` when available, else zero-fill + `rm`. Clears in-process `SSH_PRIVATE_KEY_PEM`. Known_hosts file `/tmp/pgos_known_hosts_${JOB_ID}` removed.
+
+```bash
+bash workers/tests/ssh-key-cleanup-smoke.sh
+```
+
+**DoD:** `/tmp/pgos-ssh-key-*` for the job is absent after the pipeline finishes or fails.
 
 ## Scripts
 

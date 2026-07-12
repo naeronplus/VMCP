@@ -55,6 +55,9 @@ jobs:
       - name: Godot semver / template validation unit tests (H-09/H-10)
         run: node --test workers/tests/godot-semver.test.mjs
 
+      - name: Ephemeral SSH key cleanup smoke (H-11)
+        run: bash workers/tests/ssh-key-cleanup-smoke.sh
+
   commit-agent:
     runs-on: ubuntu-latest
     steps:

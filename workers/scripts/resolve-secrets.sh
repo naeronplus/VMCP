@@ -14,7 +14,8 @@ HTTP_CODE=$(echo "$RESP" | tail -n1)
 BODY=$(echo "$RESP" | sed '$d')
 
 if [[ "$HTTP_CODE" != "200" ]]; then
-  echo "resolve-secret failed HTTP ${HTTP_CODE}: ${BODY}" >&2
+  # Never log response body (may contain secret material) — L-12 / H-11
+  echo "resolve-secret failed HTTP ${HTTP_CODE}" >&2
   exit 1
 fi
 
@@ -23,7 +24,8 @@ if ! echo "$BODY" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 
   exit 1
 fi
 
-# Parse secrets JSON and export env vars for subsequent steps
+# Parse secrets JSON and export env vars for subsequent steps.
+# SSH private key is written to a 600 file only — never to GITHUB_ENV / logs (H-11).
 eval "$(python3 - <<'PY' "$BODY"
 import json, os, shlex, sys
 data = json.loads(sys.argv[1])
@@ -41,6 +43,7 @@ emit("PGOS_LOCK_KEY", secrets.get("lockKey"))
 emit("PGOS_LOCK_OWNER", secrets.get("lockOwner"))
 emit("TARGET_PROJECT_ROOT", secrets.get("targetProjectRoot"))
 emit("TARGET_HOST", secrets.get("targetHost"))
+# Ephemeral only for materialization below — not for GITHUB_ENV
 emit("SSH_PRIVATE_KEY_PEM", secrets.get("sshPrivateKey"))
 
 emit("PRESIGN_STAGING_PUT", urls.get("stagingPut"))
@@ -52,6 +55,18 @@ emit("PRESIGN_SNAPSHOT_GET", urls.get("snapshotGet"))
 emit("PRESIGN_DIAGNOSTICS_PUT", urls.get("diagnosticsPut"))
 PY
 )"
+
+# H-11: materialize SSH key to disk for later steps on the same runner (/tmp persists).
+# Never write PEM into GITHUB_ENV (would appear in debug logs).
+if [[ -n "${SSH_PRIVATE_KEY_PEM:-}" ]]; then
+  KEY_FILE="/tmp/pgos-ssh-key-${JOB_ID}"
+  umask 077
+  printf '%s\n' "$SSH_PRIVATE_KEY_PEM" >"$KEY_FILE"
+  chmod 600 "$KEY_FILE"
+  unset SSH_PRIVATE_KEY_PEM
+  export SSH_PRIVATE_KEY_PEM=""
+  echo "Ephemeral SSH key materialised for job (path not logged)"
+fi
 
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   {
@@ -68,6 +83,7 @@ if [[ -n "${GITHUB_ENV:-}" ]]; then
     echo "PRESIGN_SNAPSHOT_PUT=${PRESIGN_SNAPSHOT_PUT:-}"
     echo "PRESIGN_SNAPSHOT_GET=${PRESIGN_SNAPSHOT_GET:-}"
     echo "PRESIGN_DIAGNOSTICS_PUT=${PRESIGN_DIAGNOSTICS_PUT:-}"
+    # Deliberately omit SSH_PRIVATE_KEY_PEM
   } >> "$GITHUB_ENV"
 fi
 

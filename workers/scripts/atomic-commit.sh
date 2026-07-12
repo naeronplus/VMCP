@@ -16,8 +16,10 @@ FENCING_TOKEN="${FENCING_TOKEN:-}"
 : "${CALLBACK_TOKEN:?CALLBACK_TOKEN required}"
 : "${PGOS_BASE_URL:?PGOS_BASE_URL required}"
 
-# Always clean up ephemeral SSH key for cross-machine jobs (H-11)
-trap 'pgos_cleanup_ssh_key' EXIT INT TERM
+# H-11: secure-delete ephemeral key on failure / non-cross-machine exit.
+# After successful cross-machine commit, keep key for post-commit-verify (same pipeline).
+PGOS_SSH_KEEP_KEY=0
+pgos_register_ssh_key_cleanup
 
 curl -sS -X PATCH "${PGOS_BASE_URL}/api/v1/jobs/${JOB_ID}/status" \
   -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
@@ -110,4 +112,8 @@ else
     fi
   fi
   echo "cross-machine commit complete via commit-agent-once"
+  # Leave key file for post-commit-verify reimport/restore; post-commit + pipeline trap clean up.
+  PGOS_SSH_KEEP_KEY=1
+  export PGOS_SSH_KEEP_KEY
 fi
+

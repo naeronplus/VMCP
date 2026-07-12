@@ -18,7 +18,10 @@ attempt=0
 : "${CALLBACK_TOKEN:?CALLBACK_TOKEN required}"
 : "${PGOS_BASE_URL:?PGOS_BASE_URL required}"
 
-trap 'pgos_cleanup_ssh_key' EXIT INT TERM
+# H-11: always secure-delete ephemeral key after post-commit (success or failure)
+PGOS_SSH_KEEP_KEY=0
+export PGOS_SSH_KEEP_KEY
+pgos_register_ssh_key_cleanup
 
 curl -sS -X PATCH "${PGOS_BASE_URL}/api/v1/jobs/${JOB_ID}/status" \
   -H "Authorization: Bearer ${CALLBACK_TOKEN}" \

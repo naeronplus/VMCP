@@ -24,9 +24,12 @@ pgos_heartbeat_trap() {
   # shellcheck disable=SC2317
   _pgos_lifecycle_cleanup() {
     pgos_stop_heartbeat
+    # H-11 final safety net: always secure-delete ephemeral key at end of pipeline step
     if declare -F pgos_cleanup_ssh_key >/dev/null 2>&1; then
+      PGOS_SSH_KEEP_KEY=0
+      export PGOS_SSH_KEEP_KEY
       pgos_cleanup_ssh_key
     fi
   }
-  trap _pgos_lifecycle_cleanup EXIT INT TERM
+  trap _pgos_lifecycle_cleanup EXIT ERR INT TERM
 }
