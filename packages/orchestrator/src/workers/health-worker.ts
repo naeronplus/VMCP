@@ -3,7 +3,11 @@ import { getEnv } from '../config/env.js';
 import { getPool } from '../db/pool.js';
 import { lockService } from '../services/lock-service.js';
 import { jobService } from '../services/job-service.js';
-import { sendAlert, escalateDeadLetter } from '../services/alert-service.js';
+import { sendAlert } from '../services/alert-service.js';
+import {
+  escalateUnresolvedDeadLetters,
+  processDeadLetterEvent,
+} from '../services/dead-letter-service.js';
 import { schedulerService } from '../services/scheduler-service.js';
 import { uidService } from '../services/uid-service.js';
 import { githubService } from '../services/github-service.js';
@@ -12,15 +16,17 @@ import {
   healthQueue,
   secretRotationQueue,
   parityQueue,
+  mergeOutboxQueue,
 } from './queues.js';
 import { getRedis, REDIS_INSTANCE_KEY } from '../lib/redis.js';
+import { startMergeOutboxWorker } from './merge-outbox-worker.js';
 
 /**
  * Dual-path health checker (§3.2):
  * - Railway-side BullMQ repeatable job every 15s for stale locks
  * - GitHub scheduled workflow is external (workers/godot_health.yml)
  */
-export function startHealthWorkers(): Worker[] {
+export async function startHealthWorkers(): Promise<Worker[]> {
   const workers: Worker[] = [];
 
   const healthWorker = new Worker(
@@ -71,8 +77,9 @@ export function startHealthWorkers(): Worker[] {
     'pgos-dead-letter',
     async (job: Job) => {
       if (job.name === 'dead-letter') {
+        // H-14: load job + admin_contacts, enrich, email contacts (not a stub)
         const data = job.data as { jobId: string; createdAt: number };
-        console.info(`[dead-letter] recorded job ${data.jobId} at ${data.createdAt}`);
+        await processDeadLetterEvent(data);
         await beat('dead-letter-consumer');
       }
     },
@@ -104,6 +111,9 @@ export function startHealthWorkers(): Worker[] {
     { connection: queueConnection() },
   );
   workers.push(parityWorker);
+
+  // H-02: merge_outbox consumer (local FS apply or remote merge_apply.yml)
+  workers.push(await startMergeOutboxWorker());
 
   for (const w of workers) {
     w.on('failed', (job, err) => {
@@ -179,6 +189,17 @@ export async function scheduleRepeatableJobs(): Promise<void> {
     {
       repeat: { pattern: '0 3 * * *' },
       jobId: 'repeat-uid-nightly',
+      removeOnComplete: true,
+    },
+  );
+
+  // H-02: drain merge_outbox every 5 minutes
+  await mergeOutboxQueue.add(
+    'drain-pending',
+    {},
+    {
+      repeat: { every: 5 * 60 * 1000 },
+      jobId: 'repeat-merge-outbox-drain',
       removeOnComplete: true,
     },
   );
@@ -276,31 +297,14 @@ async function scanStaleLocks(): Promise<void> {
 }
 
 async function escalateDeadLetters(): Promise<void> {
-  const { rows } = await getPool().query(
-    `SELECT d.*, j.project_id, p.admin_contacts
-     FROM dead_letter_jobs d
-     JOIN jobs j ON j.id = d.job_id
-     JOIN projects p ON p.id = j.project_id
-     WHERE d.archived_at IS NULL`,
-  );
-  const now = Date.now();
-  for (const row of rows) {
-    const ageH = (now - new Date(row.created_at).getTime()) / 3_600_000;
-    const contacts: string[] = row.admin_contacts ?? [];
-    if (ageH >= 72 && !row.escalated_72h) {
-      await escalateDeadLetter(row.job_id, 72, contacts);
-      await getPool().query(
-        `UPDATE dead_letter_jobs SET escalated_72h = true WHERE id = $1`,
-        [row.id],
-      );
-    } else if (ageH >= 24 && !row.escalated_24h) {
-      await escalateDeadLetter(row.job_id, 24, contacts);
-      await getPool().query(
-        `UPDATE dead_letter_jobs SET escalated_24h = true WHERE id = $1`,
-        [row.id],
-      );
-    }
+  // M-03: 24h high / 72h critical emails project admin_contacts (ADMIN_EMAIL CC)
+  const result = await escalateUnresolvedDeadLetters();
+  if (result.escalated24 > 0 || result.escalated72 > 0) {
+    console.info(
+      `[dead-letter-escalate] 24h=${result.escalated24} 72h=${result.escalated72}`,
+    );
   }
+  await beat('dead-letter-escalate');
 }
 
 async function checkRedisFailover(): Promise<void> {
@@ -327,20 +331,31 @@ async function checkRedisFailover(): Promise<void> {
   await lockService.ensureInstanceId();
 }
 
+/**
+ * M-04: Tier B health — real GitHub Actions / runner signal (not Redis+Postgres latency).
+ * Complements scheduled godot_health.yml which POSTs probe ingestion to /tiers/B/probe.
+ */
 async function probeTierB(): Promise<void> {
-  const start = Date.now();
-  await getRedis().ping();
-  await getPool().query('SELECT 1');
-  const ms = Date.now() - start;
-  // Map infra latency to a synthetic cold-start estimate (mock when no GH runners)
-  const estimatedColdStart = Math.max(ms * 50, ms);
-  const degraded = estimatedColdStart > 120_000 || ms > 5_000;
-  await schedulerService.recordProbe('B', Math.round(estimatedColdStart), degraded);
-  if (degraded) {
+  const { tierProbeMetadata } = await import('../services/tier-probe.js');
+  const result = await githubService.probeTierBAvailability();
+  await schedulerService.recordProbe(
+    'B',
+    Math.round(result.coldStartMs),
+    result.degraded,
+    tierProbeMetadata(result),
+  );
+  await beat('tier-b-probe');
+  if (result.degraded) {
     await sendAlert({
       title: 'Tier B probe degraded',
       severity: 'high',
-      body: `Probe latency ${ms}ms (est cold-start ${estimatedColdStart}ms)`,
+      body: [
+        `source=${result.source}`,
+        `runner_online=${result.tier_b_runner_online}`,
+        `godot_cache_warm=${result.godot_cache_warm}`,
+        `cold_start_ms=${result.coldStartMs}`,
+        result.detail,
+      ].join(' '),
       code: 'E001',
     });
   }
@@ -418,12 +433,16 @@ async function scanParityStale(): Promise<void> {
 
 async function nightlyUidReconcile(): Promise<void> {
   const { rows } = await getPool().query(
-    `SELECT id, project_root FROM projects`,
+    `SELECT id, project_root, metadata FROM projects`,
   );
   for (const p of rows) {
     const result = await uidService.autoResolveDuplicates(p.id, {
       projectRoot: p.project_root ? String(p.project_root) : undefined,
       runGodot: true,
+      metadata:
+        p.metadata && typeof p.metadata === 'object'
+          ? (p.metadata as Record<string, unknown>)
+          : {},
     });
     if (result.manual.length > 0) {
       await sendAlert({

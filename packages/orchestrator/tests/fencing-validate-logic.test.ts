@@ -81,4 +81,20 @@ describe('fencing validate decision table', () => {
       false,
     );
   });
+
+  it('rejects when latest ledger reason is FAILOVER (M-17)', () => {
+    assert.equal(
+      wouldAccept({
+        latestReason: 'FAILOVER',
+        latestOwner: 'system',
+        latestToken: formatFencingToken(inst, 0),
+        latestInstanceId: inst,
+        currentInstanceId: inst,
+        presentedOwner: owner,
+        presentedToken: token,
+      }),
+      false,
+    );
+  });
 });
+

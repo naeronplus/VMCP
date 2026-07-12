@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateProductionEnv } from '../src/config/production-validation.js';
+import {
+  validateProductionEnv,
+  validateProvisionTokenProduction,
+  validateProvisionMtlsProduction,
+} from '../src/config/production-validation.js';
 import type { Env } from '../src/config/env.js';
 
 function baseEnv(overrides: Partial<Env> = {}): Env {
@@ -31,6 +35,8 @@ function baseEnv(overrides: Partial<Env> = {}): Env {
     GITHUB_WORKFLOW_FILE: 'godot_worker.yml',
     GITHUB_DEFAULT_REF: 'main',
     GITHUB_MOCK: false,
+    GITHUB_MOCK_DISPATCH_FAIL: false,
+    GITHUB_MOCK_RUN_CONCLUSION: 'success',
     DISPATCH_TIMEOUT_MS: 60_000,
     DISPATCH_POLL_INTERVAL_MS: 5_000,
     DISPATCH_MAX_CONSECUTIVE_FAILURES: 3,
@@ -47,6 +53,10 @@ function baseEnv(overrides: Partial<Env> = {}): Env {
     ADMIN_EMAIL: '',
     SANDBOX_SERVICE_URL: 'http://localhost:8090',
     SANDBOX_INTERNAL_TOKEN: 'prod-sandbox-token-32chars-minimum!!',
+    PGOS_PROVISION_TOKEN: 'prod-provision-token-dedicated-sec02!!',
+    PGOS_PROVISION_MTLS_CERT: '',
+    PGOS_PROVISION_MTLS_KEY: '',
+    PGOS_PROVISION_MTLS_CA: '',
     JWE_SECRET: 'prod-jwe-secret-32chars-minimum-value!!',
     RATE_LIMIT_PER_MINUTE: 120,
     RATE_LIMIT_BURST: 30,
@@ -82,6 +92,87 @@ describe('production env validation', () => {
   it('skips validation in development', () => {
     assert.doesNotThrow(() =>
       validateProductionEnv(baseEnv({ NODE_ENV: 'development', JWE_SECRET: 'change-me' }), { adminExists: false }),
+    );
+  });
+
+  // ── SEC-02 ──────────────────────────────────────────────────────────
+  it('SEC-02: fails when provision token equals sandbox dev default', () => {
+    assert.throws(
+      () =>
+        validateProductionEnv(
+          baseEnv({ PGOS_PROVISION_TOKEN: 'dev-sandbox-token' }),
+          { adminExists: true },
+        ),
+      /PGOS_PROVISION_TOKEN|SEC-02|sandbox/,
+    );
+  });
+
+  it('SEC-02: fails when provision token is empty in production', () => {
+    assert.throws(
+      () =>
+        validateProductionEnv(baseEnv({ PGOS_PROVISION_TOKEN: '' }), { adminExists: true }),
+      /PGOS_PROVISION_TOKEN/,
+    );
+  });
+
+  it('SEC-02: fails when provision token equals SANDBOX_INTERNAL_TOKEN', () => {
+    const shared = 'shared-token-must-not-couple-sec02!!';
+    assert.throws(
+      () =>
+        validateProductionEnv(
+          baseEnv({
+            SANDBOX_INTERNAL_TOKEN: shared,
+            PGOS_PROVISION_TOKEN: shared,
+          }),
+          { adminExists: true },
+        ),
+      /differ from SANDBOX_INTERNAL_TOKEN|SEC-02/,
+    );
+  });
+
+  it('SEC-02: fails when provision token is the dev-provision-token default', () => {
+    const errs = validateProvisionTokenProduction(
+      'dev-provision-token',
+      'prod-sandbox-token-32chars-minimum!!',
+    );
+    assert.ok(errs.some((e) => e.includes('dev-provision-token')));
+  });
+
+  it('SEC-02: validateProvisionTokenProduction accepts dedicated strong token', () => {
+    assert.deepEqual(
+      validateProvisionTokenProduction(
+        'prod-provision-token-dedicated-sec02!!',
+        'prod-sandbox-token-32chars-minimum!!',
+      ),
+      [],
+    );
+  });
+
+  // ── SEC-01 ──────────────────────────────────────────────────────────
+  it('SEC-01: fails when only MTLS cert path is set', () => {
+    assert.throws(
+      () =>
+        validateProductionEnv(
+          baseEnv({ PGOS_PROVISION_MTLS_CERT: '/etc/pgos/client.crt' }),
+          { adminExists: true },
+        ),
+      /MTLS|SEC-01/,
+    );
+  });
+
+  it('SEC-01: validateProvisionMtlsProduction requires both or neither', () => {
+    assert.equal(validateProvisionMtlsProduction({}).length, 0);
+    assert.ok(
+      validateProvisionMtlsProduction({
+        PGOS_PROVISION_MTLS_CERT: '/c.pem',
+      }).length > 0,
+    );
+    assert.equal(
+      validateProvisionMtlsProduction({
+        PGOS_PROVISION_MTLS_CERT: '/c.pem',
+        PGOS_PROVISION_MTLS_KEY: '/k.pem',
+      }).length,
+      0,
     );
   });
 });

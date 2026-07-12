@@ -16,6 +16,9 @@ function parseSecretsResponse(body: string): Record<string, string> {
     ['PGOS_LOCK_OWNER', secrets.lockOwner],
     ['TARGET_PROJECT_ROOT', secrets.targetProjectRoot],
     ['TARGET_HOST', secrets.targetHost],
+    // L-05
+    ['REIMPORT_TIMEOUT_SEC', secrets.reimportTimeoutSec],
+    ['REIMPORT_MAX_RETRIES', secrets.reimportMaxRetries],
     ['PRESIGN_STAGING_PUT', urls.stagingPut],
     ['PRESIGN_STAGING_GET', urls.stagingGet],
     ['PRESIGN_STAGING_ARCHIVE_PUT', urls.stagingArchivePut],
@@ -39,6 +42,8 @@ describe('worker secrets parse (resolve-secrets.sh)', () => {
         lockKey: 'gen:proj-1',
         lockOwner: 'job:abc',
         targetProjectRoot: '/var/godot/projects/p1',
+        reimportTimeoutSec: 300,
+        reimportMaxRetries: 2,
         presignedUrls: {
           stagingGet: 'https://s3/staging-get',
           stagingPut: 'https://s3/staging-put',
@@ -54,6 +59,8 @@ describe('worker secrets parse (resolve-secrets.sh)', () => {
     assert.equal(env.PRESIGN_STAGING_GET, 'https://s3/staging-get');
     assert.equal(env.PRESIGN_SNAPSHOT_GET, 'https://s3/snapshot-get');
     assert.equal(env.TARGET_PROJECT_ROOT, '/var/godot/projects/p1');
+    assert.equal(env.REIMPORT_TIMEOUT_SEC, '300');
+    assert.equal(env.REIMPORT_MAX_RETRIES, '2');
   });
 
   it('omits empty optional fields', () => {

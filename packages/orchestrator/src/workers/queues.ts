@@ -38,6 +38,10 @@ export const secretRotationQueue = new Queue('pgos-secret-rotation', {
   connection: connection(),
 });
 export const parityQueue = new Queue('pgos-parity', { connection: connection() });
+/** H-02: structural merge outbox drain (local apply or remote workflow dispatch). */
+export const mergeOutboxQueue = new Queue('pgos-merge-outbox', {
+  connection: connection(),
+});
 
 export function queueConnection(): ConnectionOptions {
   return connection();

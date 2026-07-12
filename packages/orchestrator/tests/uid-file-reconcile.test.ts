@@ -41,4 +41,34 @@ describe('UID file reconcile (H-03)', () => {
     assert.match(fs.readFileSync(a, 'utf8'), /uid:\/\/GEN_fixed/);
     assert.match(fs.readFileSync(b, 'utf8'), /uid:\/\/GEN_fixed/);
   });
+
+  it('unreadable root returns remote_script then dispatch when metadata present', async () => {
+    const { reconcileProjectFiles } = await import(
+      '../src/services/uid-file-reconcile.js'
+    );
+    const missing = path.join(os.tmpdir(), `no-such-uid-root-${Date.now()}`);
+    const r1 = await reconcileProjectFiles({
+      projectId: 'p',
+      projectRoot: missing,
+      replacements: new Map([['uid://a', 'uid://b']]),
+      metadata: {},
+      dispatchRemote: async () => ({
+        mode: 'remote_script',
+        detail: 'no host',
+      }),
+    });
+    assert.equal(r1.mode, 'remote_script');
+
+    const r2 = await reconcileProjectFiles({
+      projectId: 'p',
+      projectRoot: missing,
+      replacements: new Map([['uid://a', 'uid://b']]),
+      metadata: { targetHost: 'u@h' },
+      dispatchRemote: async () => ({
+        mode: 'remote_dispatched',
+        s3Key: 'k',
+      }),
+    });
+    assert.equal(r2.mode, 'remote_dispatched');
+  });
 });
