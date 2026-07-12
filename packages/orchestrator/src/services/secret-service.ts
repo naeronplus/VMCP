@@ -9,6 +9,10 @@ import { hashToken } from './auth-service.js';
  * JWE + reference exchange for sensitive worker inputs (§9.4).
  * Dispatch carries a single dispatch JWE; callback credential is embedded inside
  * (never passed as a GitHub workflow_dispatch input).
+ *
+ * Two shapes (same crypto — dir + A256GCM):
+ * 1. Job-linked: outer { referenceToken, jobId, callbackToken } + secret_references row
+ * 2. Direct (H-02 merge-outbox): outer { kind:'direct', purpose, envelope } — no job FK
  */
 export class SecretService {
   private key(): Uint8Array {
@@ -53,32 +57,68 @@ export class SecretService {
   }
 
   /**
+   * H-02 / maintenance workflows: self-contained dispatch JWE (no jobs row).
+   * Same jose dir+A256GCM as createEnvelope. Never put raw SSH in workflow inputs —
+   * seal material here and pass only `secretJwe` to workflow_dispatch.
+   */
+  async createDirectDispatchJwe(
+    secrets: Omit<SecretEnvelope, 'expiresAt'>,
+    opts?: { purpose?: string; ttlMs?: number },
+  ): Promise<{ jwe: string; envelope: SecretEnvelope }> {
+    const ttlMs = opts?.ttlMs ?? 3_600_000; // 1h — match patch presign
+    const purpose = opts?.purpose ?? 'merge-apply';
+    const expiresAt = new Date(Date.now() + ttlMs);
+    const envelope: SecretEnvelope = {
+      ...secrets,
+      expiresAt: expiresAt.toISOString(),
+    };
+    const jwe = await new jose.CompactEncrypt(
+      new TextEncoder().encode(
+        JSON.stringify({
+          kind: 'direct',
+          purpose,
+          callbackToken: secrets.callbackToken ?? '',
+          envelope,
+        }),
+      ),
+    )
+      .setProtectedHeader({ alg: 'dir', enc: 'A256GCM' })
+      .encrypt(this.key());
+    return { jwe, envelope };
+  }
+
+  /**
    * Worker resolves dispatch JWE (single POST, no separate callback workflow input).
-   * Verifies embedded callback token against job record; consumes secret reference once.
+   * Supports job-linked references and direct (merge-outbox) envelopes.
    */
   async resolveDispatchJwe(jwe: string): Promise<SecretEnvelope | null> {
-    let referenceToken: string;
-    let jobId: string;
-    let callbackToken: string;
     try {
       const { plaintext } = await jose.compactDecrypt(jwe, this.key());
       const outer = JSON.parse(new TextDecoder().decode(plaintext)) as {
-        referenceToken: string;
-        jobId: string;
-        callbackToken: string;
+        kind?: string;
+        purpose?: string;
+        referenceToken?: string;
+        jobId?: string;
+        callbackToken?: string;
+        envelope?: SecretEnvelope;
       };
+
+      // H-02 direct envelope (merge-apply, etc.)
+      if (outer.kind === 'direct' && outer.envelope) {
+        const exp = outer.envelope.expiresAt;
+        if (!exp || new Date(exp) < new Date()) return null;
+        return outer.envelope;
+      }
+
       if (!outer.referenceToken || !outer.jobId || !outer.callbackToken) return null;
-      referenceToken = outer.referenceToken;
-      jobId = outer.jobId;
-      callbackToken = outer.callbackToken;
+
+      const tokenOk = await this.verifyCallbackToken(outer.jobId, outer.callbackToken);
+      if (!tokenOk) return null;
+
+      return this.resolveByReference(outer.referenceToken, outer.jobId);
     } catch {
       return null;
     }
-
-    const tokenOk = await this.verifyCallbackToken(jobId, callbackToken);
-    if (!tokenOk) return null;
-
-    return this.resolveByReference(referenceToken, jobId);
   }
 
   // L-06: legacy resolve(jwe, jobId) removed — zero callers; use resolveDispatchJwe only.

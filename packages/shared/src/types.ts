@@ -279,6 +279,14 @@ export interface SecretEnvelope {
   reimportTimeoutSec?: number;
   /** L-05: orchestrator REIMPORT_MAX_RETRIES */
   reimportMaxRetries?: number;
+  /** H-02: merge-apply outbox id (direct dispatch JWE) */
+  outboxId?: string;
+  /** H-02: relative .tscn path on target */
+  relPath?: string;
+  /** H-02: orchestrator base URL for complete callback */
+  pgosBaseUrl?: string;
+  /** H-02: presigned GET for patch.json (also may appear as workflow input) */
+  patchGetUrl?: string;
   presignedUrls?: SecretPresignedUrls;
   expiresAt: string;
 }

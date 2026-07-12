@@ -16,6 +16,10 @@ import {
 import type { TscnPatch } from '../services/tscn-merge.js';
 import { s3Service } from '../services/s3-service.js';
 import { githubService } from '../services/github-service.js';
+import {
+  buildMergeApplyDispatchEnvelope,
+  type MergeApplyDispatchEnvelope,
+} from '../services/merge-outbox-dispatch.js';
 
 export const MERGE_APPLY_WORKFLOW = 'merge_apply.yml';
 
@@ -54,6 +58,13 @@ export type MergeOutboxDeps = {
     dispatched: boolean;
     mock?: boolean;
   }>;
+  /** H-02: build secretJwe envelope for remote dispatch (injectable for tests). */
+  buildDispatchEnvelope?: (opts: {
+    row: MergeOutboxPendingRow;
+    projectRoot: string;
+    patchGetUrl: string;
+    s3Key: string;
+  }) => Promise<MergeApplyDispatchEnvelope>;
   audit: typeof audit;
   sendAlert: typeof sendAlert;
   now?: () => Date;
@@ -178,24 +189,32 @@ export async function processMergeOutboxRow(
       root ||
       String(meta.projectRoot ?? meta.project_root ?? `/var/godot/projects/${row.project_id}`);
 
-    await deps.dispatchMergeApply({
-      outboxId: row.id,
-      projectId: row.project_id,
-      path: row.path,
+    // H-02: seal SSH / service token in secretJwe — never as bare workflow inputs.
+    const buildEnvelope =
+      deps.buildDispatchEnvelope ??
+      ((o) => buildMergeApplyDispatchEnvelope(o));
+    const envelope = await buildEnvelope({
+      row,
       projectRoot,
       patchGetUrl,
       s3Key,
     });
+    const inputs = envelope.workflowInputs;
+    if (!inputs.secretJwe) {
+      throw new Error('merge-apply dispatch envelope missing secretJwe');
+    }
+    for (const [k, v] of Object.entries(inputs)) {
+      if (k !== 'secretJwe' && /BEGIN (RSA |OPENSSH |EC )?PRIVATE KEY/i.test(v)) {
+        throw new Error(`refusing dispatch: private key leaked in input ${k}`);
+      }
+    }
+
+    await deps.dispatchMergeApply(inputs);
 
     // Leave status pending until host callback marks applied; record dispatch in detail.
-    // For v2.0: mark as applied only after host apply — use detail + keep pending,
-    // OR mark dispatched via detail field while status stays pending.
-    // Plan §7.1.3.4: success → applied. Remote success is async; we set detail and
-    // leave pending so a later host callback / re-run can finish. If dispatch-only
-    // tracking is needed, store detail without changing terminal status.
     await deps.markDispatched(
       row.id,
-      `dispatched ${MERGE_APPLY_WORKFLOW} s3Key=${s3Key}`,
+      `dispatched ${MERGE_APPLY_WORKFLOW} s3Key=${s3Key} secretJwe=1`,
     );
     await deps.audit({
       action: 'merge.outbox_dispatched',
@@ -206,6 +225,9 @@ export async function processMergeOutboxRow(
         s3Key,
         path: row.path,
         projectRoot,
+        secretJwe: true,
+        targetHost: envelope.sealed.targetHost ?? null,
+        hasSshPrivateKey: envelope.sealed.hasSshPrivateKey,
       },
     });
     return 'dispatched';
@@ -308,6 +330,7 @@ export function createDefaultMergeOutboxDeps(): MergeOutboxDeps {
     async dispatchMergeApply(inputs) {
       return githubService.dispatchWorkflowFile(MERGE_APPLY_WORKFLOW, inputs);
     },
+    buildDispatchEnvelope: (o) => buildMergeApplyDispatchEnvelope(o),
     audit,
     sendAlert,
   };

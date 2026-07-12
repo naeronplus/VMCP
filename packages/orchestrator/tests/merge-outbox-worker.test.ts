@@ -123,8 +123,33 @@ describe('merge-outbox-worker (H-02)', () => {
     assert.ok(deps.audits.includes('merge.outbox_applied'));
   });
 
-  it('remote row triggers workflow dispatch mock', async () => {
-    const deps = mockDeps();
+  it('remote row triggers workflow dispatch mock with secretJwe', async () => {
+    const deps = mockDeps({
+      async buildDispatchEnvelope({ row, projectRoot, patchGetUrl, s3Key }) {
+        return {
+          workflowInputs: {
+            secretJwe: 'jwe.fake.payload',
+            outboxId: row.id,
+            projectId: row.project_id,
+            path: row.path,
+            projectRoot,
+            patchGetUrl,
+            s3Key,
+          },
+          sealed: {
+            hasSecretJwe: true as const,
+            targetHost: 'user@target',
+            projectRoot,
+            outboxId: row.id,
+            relPath: row.path,
+            patchGetUrl,
+            hasSshPrivateKey: true,
+            hasCallbackToken: true,
+            pgosBaseUrl: 'https://pgos.example',
+          },
+        };
+      },
+    });
     const row = baseRow({
       project_root: '/var/godot/projects/remote-only',
       metadata: { targetHost: 'user@target', targetProvisionUrl: 'http://t/v1/provision' },
@@ -133,7 +158,13 @@ describe('merge-outbox-worker (H-02)', () => {
     assert.equal(outcome, 'dispatched');
     assert.equal(deps.dispatches.length, 1);
     assert.equal(deps.dispatches[0]!.outboxId, 'outbox-1');
+    assert.equal(deps.dispatches[0]!.secretJwe, 'jwe.fake.payload');
     assert.ok(deps.dispatches[0]!.patchGetUrl.includes('s3.example'));
+    // No raw PEM in dispatch inputs
+    for (const [k, v] of Object.entries(deps.dispatches[0]!)) {
+      if (k === 'secretJwe') continue;
+      assert.doesNotMatch(String(v), /BEGIN .*PRIVATE KEY/);
+    }
     assert.deepEqual(deps.dispatched, ['outbox-1']);
     assert.ok(deps.audits.includes('merge.outbox_dispatched'));
   });
@@ -177,11 +208,36 @@ describe('merge-outbox-worker (H-02)', () => {
         return rows;
       },
       pathIsReadableDir: async (d) => d === root,
+      async buildDispatchEnvelope({ row, projectRoot, patchGetUrl, s3Key }) {
+        return {
+          workflowInputs: {
+            secretJwe: 'jwe.batch',
+            outboxId: row.id,
+            projectId: row.project_id,
+            path: row.path,
+            projectRoot,
+            patchGetUrl,
+            s3Key,
+          },
+          sealed: {
+            hasSecretJwe: true as const,
+            targetHost: 'h',
+            projectRoot,
+            outboxId: row.id,
+            relPath: row.path,
+            patchGetUrl,
+            hasSshPrivateKey: false,
+            hasCallbackToken: true,
+            pgosBaseUrl: 'https://pgos.example',
+          },
+        };
+      },
     });
     const result = await processPendingMergeOutbox(deps, 10);
     assert.equal(result.applied, 1);
     assert.equal(result.dispatched, 1);
     assert.equal(result.failed, 0);
+    assert.equal(deps.dispatches[0]?.secretJwe, 'jwe.batch');
   });
 
   it('unsupported non-tscn path fails with E014 path', async () => {
