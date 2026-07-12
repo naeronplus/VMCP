@@ -147,18 +147,107 @@ export class UidService {
   }
 
   /**
+   * H-03: file rewrite / remote dispatch after DB duplicate fix.
+   * Exported for tests (uid-service.test.ts) without DB fixtures.
+   */
+  async reconcileProjectFilesAfterFix(opts: {
+    projectId: string;
+    projectRoot: string;
+    replacements: Map<string, string>;
+    runGodot?: boolean;
+    metadata?: Record<string, unknown> | null;
+    /** When true and metadata omitted, load projects.metadata from DB. */
+    loadMetadataFromDb?: boolean;
+    reconcileFiles?: (args: {
+      projectId: string;
+      projectRoot: string;
+      replacements: Map<string, string>;
+      runGodot?: boolean;
+      metadata?: Record<string, unknown> | null;
+    }) => Promise<{
+      filesTouched: string[];
+      replacements: number;
+      godotOk?: boolean;
+      mode: 'local' | 'remote_script' | 'remote_dispatched';
+      detail?: string;
+      s3Key?: string;
+      workflowRunId?: number;
+    }>;
+  }): Promise<{
+    filesTouched?: string[];
+    godotOk?: boolean;
+    fileMode?: 'local' | 'remote_script' | 'remote_dispatched';
+    manual: { uid: string; paths: string[] }[];
+  }> {
+    let metadata = opts.metadata;
+    if (metadata === undefined && opts.loadMetadataFromDb !== false) {
+      const { rows: projRows } = await getPool().query(
+        `SELECT metadata FROM projects WHERE id = $1`,
+        [opts.projectId],
+      );
+      metadata =
+        projRows[0]?.metadata && typeof projRows[0].metadata === 'object'
+          ? (projRows[0].metadata as Record<string, unknown>)
+          : {};
+    }
+
+    const reconcile =
+      opts.reconcileFiles ??
+      (async (args) => {
+        const { reconcileProjectFiles } = await import('./uid-file-reconcile.js');
+        return reconcileProjectFiles(args);
+      });
+
+    const fileResult = await reconcile({
+      projectId: opts.projectId,
+      projectRoot: opts.projectRoot,
+      replacements: opts.replacements,
+      runGodot: opts.runGodot,
+      metadata,
+    });
+
+    const manual: { uid: string; paths: string[] }[] = [];
+    if (fileResult.godotOk === false) {
+      manual.push({
+        uid: 'godot-reimport-failed',
+        paths: fileResult.filesTouched,
+      });
+    }
+    if (
+      fileResult.mode === 'remote_script' &&
+      fileResult.detail?.includes('dispatch failed')
+    ) {
+      manual.push({
+        uid: 'remote-uid-dispatch-failed',
+        paths: [opts.projectRoot],
+      });
+    }
+
+    return {
+      filesTouched: fileResult.filesTouched,
+      godotOk: fileResult.godotOk,
+      fileMode: fileResult.mode,
+      manual,
+    };
+  }
+
+  /**
    * Auto-resolve: keep canonical (newest), regenerate others in DB.
    * Optionally rewrite project files + Godot validate when projectRoot provided (H-03).
    */
   async autoResolveDuplicates(
     projectId: string,
-    opts?: { projectRoot?: string; runGodot?: boolean },
+    opts?: {
+      projectRoot?: string;
+      runGodot?: boolean;
+      metadata?: Record<string, unknown> | null;
+    },
   ): Promise<{
     fixed: { oldUid: string; newUid: string; path: string }[];
     manual: { uid: string; paths: string[] }[];
     filesTouched?: string[];
     godotOk?: boolean;
-    fileMode?: 'local' | 'remote_script';
+    fileMode?: 'local' | 'remote_script' | 'remote_dispatched';
   }> {
     const dups = await this.findDuplicates(projectId);
     const fixed: { oldUid: string; newUid: string; path: string }[] = [];
@@ -208,26 +297,21 @@ export class UidService {
 
     let filesTouched: string[] | undefined;
     let godotOk: boolean | undefined;
-    let fileMode: 'local' | 'remote_script' | undefined;
+    let fileMode: 'local' | 'remote_script' | 'remote_dispatched' | undefined;
 
     if (opts?.projectRoot && replacements.size > 0) {
-      const { reconcileProjectFiles } = await import('./uid-file-reconcile.js');
-      const fileResult = await reconcileProjectFiles({
+      const fileOutcome = await this.reconcileProjectFilesAfterFix({
         projectId,
         projectRoot: opts.projectRoot,
         replacements,
         runGodot: opts.runGodot,
+        metadata: opts.metadata,
+        loadMetadataFromDb: opts.metadata === undefined,
       });
-      filesTouched = fileResult.filesTouched;
-      godotOk = fileResult.godotOk;
-      fileMode = fileResult.mode;
-      if (fileResult.godotOk === false) {
-        // Surface as manual for operators (E008 path via caller)
-        manual.push({
-          uid: 'godot-reimport-failed',
-          paths: filesTouched,
-        });
-      }
+      filesTouched = fileOutcome.filesTouched;
+      godotOk = fileOutcome.godotOk;
+      fileMode = fileOutcome.fileMode;
+      manual.push(...fileOutcome.manual);
     }
 
     return { fixed, manual, filesTouched, godotOk, fileMode };

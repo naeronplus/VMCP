@@ -1,5 +1,5 @@
 /**
- * JIT ephemeral SSH key provisioning for cross-machine commits (§4.2.1).
+ * JIT ephemeral SSH key provisioning for cross-machine commits (§4.2.1 / DEP-01).
  *
  * Flow:
  * 1. Runner (or orchestrator) generates ed25519 keypair.
@@ -13,9 +13,19 @@
  * Target provisioner MUST honor:
  * - singleUse: false + maxSessions (multi round-trip: stage/commit/reimport/restore)
  * - environment map → OpenSSH authorized_keys environment="K=V,K2=V2"
+ *
+ * Auth (SEC-02): PGOS_PROVISION_TOKEN preferred; SANDBOX_INTERNAL_TOKEN fallback
+ * with deprecation warning only.
+ *
+ * Transport (SEC-01): optional client mTLS via PGOS_PROVISION_MTLS_CERT/KEY(/CA)
+ * PEM file paths — preferred over bearer-only in production checklists.
  */
 import crypto from 'node:crypto';
 import { generateKeyPairSync } from 'node:crypto';
+import { readFileSync, existsSync } from 'node:fs';
+import https from 'node:https';
+import http from 'node:http';
+import { URL } from 'node:url';
 import { getEnv } from '../config/env.js';
 import { audit } from './audit-service.js';
 
@@ -27,6 +37,166 @@ export interface EphemeralSshKey {
 }
 
 export type ProvisionEnvironment = Record<string, string>;
+
+export interface ProvisionMtlsMaterial {
+  cert: Buffer;
+  key: Buffer;
+  ca?: Buffer;
+  certPath: string;
+  keyPath: string;
+  caPath?: string;
+}
+
+let warnedSandboxTokenFallback = false;
+
+/**
+ * Resolve bearer for target provisioner (SEC-02).
+ * Prefer PGOS_PROVISION_TOKEN; fall back to SANDBOX_INTERNAL_TOKEN with warning.
+ */
+export function resolveProvisionBearerToken(env: {
+  PGOS_PROVISION_TOKEN?: string;
+  SANDBOX_INTERNAL_TOKEN: string;
+  NODE_ENV?: string;
+}): { token: string; usedFallback: boolean } {
+  const dedicated = (env.PGOS_PROVISION_TOKEN ?? '').trim();
+  if (dedicated) {
+    return { token: dedicated, usedFallback: false };
+  }
+  return { token: env.SANDBOX_INTERNAL_TOKEN, usedFallback: true };
+}
+
+/**
+ * Load client mTLS PEMs from disk (SEC-01).
+ * Returns null when neither path is set. Throws when only one of cert/key is set
+ * or when files are missing.
+ */
+export function loadProvisionMtlsMaterial(opts: {
+  certPath?: string;
+  keyPath?: string;
+  caPath?: string;
+}): ProvisionMtlsMaterial | null {
+  const certPath = (opts.certPath ?? '').trim();
+  const keyPath = (opts.keyPath ?? '').trim();
+  const caPath = (opts.caPath ?? '').trim();
+  if (!certPath && !keyPath) {
+    return null;
+  }
+  if (!certPath || !keyPath) {
+    throw new Error(
+      'PGOS_PROVISION_MTLS_CERT and PGOS_PROVISION_MTLS_KEY must both be set (SEC-01)',
+    );
+  }
+  if (!existsSync(certPath)) {
+    throw new Error(`PGOS_PROVISION_MTLS_CERT not found: ${certPath}`);
+  }
+  if (!existsSync(keyPath)) {
+    throw new Error(`PGOS_PROVISION_MTLS_KEY not found: ${keyPath}`);
+  }
+  if (caPath && !existsSync(caPath)) {
+    throw new Error(`PGOS_PROVISION_MTLS_CA not found: ${caPath}`);
+  }
+  return {
+    cert: readFileSync(certPath),
+    key: readFileSync(keyPath),
+    ca: caPath ? readFileSync(caPath) : undefined,
+    certPath,
+    keyPath,
+    caPath: caPath || undefined,
+  };
+}
+
+/**
+ * Resolve mTLS paths from env and optional per-call overrides (job-service / metadata later).
+ */
+export function resolveProvisionMtlsPaths(env: {
+  PGOS_PROVISION_MTLS_CERT?: string;
+  PGOS_PROVISION_MTLS_KEY?: string;
+  PGOS_PROVISION_MTLS_CA?: string;
+}, overrides?: {
+  mtlsCert?: string;
+  mtlsKey?: string;
+  mtlsCa?: string;
+}): { certPath: string; keyPath: string; caPath: string } {
+  return {
+    certPath: (overrides?.mtlsCert ?? env.PGOS_PROVISION_MTLS_CERT ?? '').trim(),
+    keyPath: (overrides?.mtlsKey ?? env.PGOS_PROVISION_MTLS_KEY ?? '').trim(),
+    caPath: (overrides?.mtlsCa ?? env.PGOS_PROVISION_MTLS_CA ?? '').trim(),
+  };
+}
+
+/**
+ * HTTP(S) POST with optional client certificates (SEC-01).
+ * Uses node:https Agent when mTLS material is present; plain fetch otherwise.
+ */
+export async function provisionHttpPost(
+  url: string,
+  body: string,
+  headers: Record<string, string>,
+  mtls: ProvisionMtlsMaterial | null,
+): Promise<{ status: number; bodyText: string }> {
+  if (!mtls) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body,
+    });
+    let bodyText = '';
+    try {
+      bodyText = await res.text();
+    } catch {
+      bodyText = '';
+    }
+    return { status: res.status, bodyText };
+  }
+
+  return new Promise((resolve, reject) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    const isHttps = parsed.protocol === 'https:';
+    const lib = isHttps ? https : http;
+    const agent = isHttps
+      ? new https.Agent({
+          cert: mtls.cert,
+          key: mtls.key,
+          ca: mtls.ca,
+          rejectUnauthorized: true,
+        })
+      : undefined;
+
+    const req = lib.request(
+      {
+        protocol: parsed.protocol,
+        hostname: parsed.hostname,
+        port: parsed.port || (isHttps ? 443 : 80),
+        path: `${parsed.pathname}${parsed.search}`,
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Length': Buffer.byteLength(body),
+        },
+        agent,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c) => chunks.push(c as Buffer));
+        res.on('end', () => {
+          resolve({
+            status: res.statusCode ?? 0,
+            bodyText: Buffer.concat(chunks).toString('utf8'),
+          });
+        });
+      },
+    );
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
 
 export function generateEphemeralEd25519(): EphemeralSshKey {
   const { privateKey, publicKey } = generateKeyPairSync('ed25519');
@@ -54,49 +224,87 @@ export async function provisionPublicKey(opts: {
   environment?: ProvisionEnvironment;
   maxSessions?: number;
   ttlSeconds?: number;
+  /** Optional overrides (prefer env; job-service may pass through metadata later). */
   mtlsCert?: string;
   mtlsKey?: string;
-}): Promise<{ ok: boolean; detail?: string }> {
+  mtlsCa?: string;
+}): Promise<{ ok: boolean; detail?: string; keyId?: string; expiresAt?: string }> {
   const env = getEnv();
   const ttlSeconds = opts.ttlSeconds ?? 300;
   const maxSessions = opts.maxSessions ?? 8;
+  const { token, usedFallback } = resolveProvisionBearerToken(env);
+  if (usedFallback && !warnedSandboxTokenFallback) {
+    warnedSandboxTokenFallback = true;
+    console.warn(
+      '[ssh-provision] PGOS_PROVISION_TOKEN unset; falling back to SANDBOX_INTERNAL_TOKEN (deprecated for provision auth — set PGOS_PROVISION_TOKEN)',
+    );
+  }
+
+  let mtls: ProvisionMtlsMaterial | null = null;
   try {
-    const res = await fetch(opts.targetProvisionUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${env.SANDBOX_INTERNAL_TOKEN}`,
-      },
-      body: JSON.stringify({
-        publicKey: opts.publicKeyOpenSsh,
-        forcedCommand: opts.forcedCommand,
-        jobId: opts.jobId,
-        // Multi-session within TTL — ForcedCommand pipeline needs stage+commit+verify(+restore)
-        singleUse: false,
-        maxSessions,
-        ttlSeconds,
-        environment: opts.environment ?? {},
-      }),
+    const paths = resolveProvisionMtlsPaths(env, {
+      mtlsCert: opts.mtlsCert,
+      mtlsKey: opts.mtlsKey,
+      mtlsCa: opts.mtlsCa,
     });
-    await audit({
+    mtls = loadProvisionMtlsMaterial(paths);
+  } catch (err) {
+    return { ok: false, detail: (err as Error).message };
+  }
+
+  const payload = JSON.stringify({
+    publicKey: opts.publicKeyOpenSsh,
+    forcedCommand: opts.forcedCommand,
+    jobId: opts.jobId,
+    // Multi-session within TTL — ForcedCommand pipeline needs stage+commit+verify(+restore)
+    singleUse: false,
+    maxSessions,
+    ttlSeconds,
+    environment: opts.environment ?? {},
+  });
+
+  try {
+    const { status, bodyText } = await provisionHttpPost(
+      opts.targetProvisionUrl,
+      payload,
+      {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      mtls,
+    );
+    let parsed: { keyId?: string; expiresAt?: string; ok?: boolean } = {};
+    try {
+      parsed = bodyText ? (JSON.parse(bodyText) as typeof parsed) : {};
+    } catch {
+      /* non-JSON error body */
+    }
+    await safeAudit({
       action: 'ssh.jit_provisioned',
       resourceType: 'job',
       resourceId: opts.jobId,
       detail: {
         target: opts.targetProvisionUrl,
-        status: res.status,
+        status,
         singleUse: false,
         maxSessions,
         ttlSeconds,
         environmentKeys: Object.keys(opts.environment ?? {}),
+        provisionAuth: usedFallback ? 'sandbox_token_fallback' : 'pgos_provision_token',
+        mtls: Boolean(mtls),
+        keyId: parsed.keyId,
       },
     });
-    if (!res.ok) {
-      return { ok: false, detail: await res.text() };
+    if (status < 200 || status >= 300) {
+      return { ok: false, detail: bodyText || `HTTP ${status}` };
     }
-    return { ok: true };
+    return {
+      ok: true,
+      keyId: parsed.keyId,
+      expiresAt: parsed.expiresAt,
+    };
   } catch (err) {
-    await audit({
+    await safeAudit({
       action: 'ssh.jit_provisioned',
       resourceType: 'job',
       resourceId: opts.jobId,
@@ -104,9 +312,19 @@ export async function provisionPublicKey(opts: {
         target: opts.targetProvisionUrl,
         status: 0,
         error: (err as Error).message,
+        mtls: Boolean(mtls),
       },
     });
     return { ok: false, detail: (err as Error).message };
+  }
+}
+
+async function safeAudit(input: Parameters<typeof audit>[0]): Promise<void> {
+  try {
+    await audit(input);
+  } catch (err) {
+    // Provision must not fail solely because audit sink is down (tests, DB blip).
+    console.warn('[ssh-provision] audit failed:', (err as Error).message);
   }
 }
 
@@ -169,18 +387,27 @@ function encodeOpenSSHEd25519(rawPubKey: Buffer): string {
 
 export async function rotateAgentSecrets(targetRotateUrl: string): Promise<void> {
   const env = getEnv();
-  await fetch(targetRotateUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.SANDBOX_INTERNAL_TOKEN}`,
+  const { token } = resolveProvisionBearerToken(env);
+  const paths = resolveProvisionMtlsPaths(env);
+  let mtls: ProvisionMtlsMaterial | null = null;
+  try {
+    mtls = loadProvisionMtlsMaterial(paths);
+  } catch (err) {
+    console.warn('[ssh-provision] rotate mTLS load failed:', (err as Error).message);
+  }
+  await provisionHttpPost(
+    targetRotateUrl,
+    JSON.stringify({ action: 'rotate-mtls', periodDays: 90 }),
+    {
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ action: 'rotate-mtls', periodDays: 90 }),
-  });
-  await audit({
+    mtls,
+  );
+  await safeAudit({
     action: 'agent.secrets_rotated',
     resourceType: 'commit-agent',
     resourceId: targetRotateUrl,
-    detail: { periodDays: 90 },
+    detail: { periodDays: 90, mtls: Boolean(mtls) },
   });
 }

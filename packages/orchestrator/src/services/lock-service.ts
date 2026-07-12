@@ -4,15 +4,51 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import {
+  formatFencingToken,
   parseFencingToken,
   type ActiveLock,
   type LockFencingEntry,
 } from '@vibrato/shared';
 import { getRedis, REDIS_INSTANCE_KEY } from '../lib/redis.js';
 import { getPool, withTransaction } from '../db/pool.js';
-import { audit } from './audit-service.js';
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Sentinel lock_key always written on Redis instance rotation (M-17).
+ * Guarantees a FAILOVER ledger row even when no pg_locks are active.
+ * Not used for normal acquire/release — audit + history only.
+ */
+export const FAILOVER_SENTINEL_LOCK_KEY = 'pgos:system:redis-failover';
+
+export type FailoverLedgerRow = {
+  lockKey: string;
+  owner: string;
+  token: string;
+  instanceId: string;
+  reason: 'FAILOVER';
+};
+
+/**
+ * Build FAILOVER ledger rows for rotateInstanceIdOnFailover (pure, testable).
+ * - One row per active lock_key (so validateFencingToken sees latest.reason=FAILOVER)
+ * - Always includes the sentinel key for a durable audit trail
+ */
+export function buildFailoverLedgerRows(opts: {
+  newInstanceId: string;
+  activeLockKeys: string[];
+}): FailoverLedgerRow[] {
+  const token = formatFencingToken(opts.newInstanceId, 0);
+  const keys = new Set<string>(opts.activeLockKeys.filter(Boolean));
+  keys.add(FAILOVER_SENTINEL_LOCK_KEY);
+  return [...keys].sort().map((lockKey) => ({
+    lockKey,
+    owner: 'system',
+    token,
+    instanceId: opts.newInstanceId,
+    reason: 'FAILOVER' as const,
+  }));
+}
 
 function loadLua(name: string): string {
   const candidates = [
@@ -68,22 +104,71 @@ export class LockService {
   /**
    * Called by health checker after Redis failover detection.
    * Rotates instanceId so old fencing tokens are rejected.
+   *
+   * M-17: also INSERT lock_fencing_seq rows with reason='FAILOVER' for every
+   * active lock_key (+ sentinel) so validateFencingToken sees FAILOVER on the
+   * latest ledger row (not only instance_id mismatch).
    */
   async rotateInstanceIdOnFailover(): Promise<string> {
     const redis = getRedis();
+    const previousInstanceId = this.instanceId ?? (await redis.get(REDIS_INSTANCE_KEY));
     const newId = randomUUID();
-    await redis.set(REDIS_INSTANCE_KEY, newId);
-    await getPool().query(
-      `UPDATE redis_instance_state SET instance_id = $1::uuid, updated_at = now() WHERE id = 1`,
-      [newId],
+
+    // Active generation locks that must be invalidated at the ledger layer
+    const { rows: activeLocks } = await getPool().query<{ lock_key: string }>(
+      `SELECT lock_key FROM pg_locks`,
     );
-    this.instanceId = newId;
-    await audit({
-      action: 'redis.failover_instance_rotated',
-      resourceType: 'redis',
-      resourceId: newId,
-      detail: { reason: 'FAILOVER' },
+    const activeKeys = activeLocks.map((r) => r.lock_key);
+    const ledgerRows = buildFailoverLedgerRows({
+      newInstanceId: newId,
+      activeLockKeys: activeKeys,
     });
+
+    await withTransaction(async (client) => {
+      // 1) Point Postgres singleton at the new Redis master id
+      await client.query(
+        `INSERT INTO redis_instance_state (id, instance_id, updated_at)
+         VALUES (1, $1::uuid, now())
+         ON CONFLICT (id) DO UPDATE
+           SET instance_id = EXCLUDED.instance_id, updated_at = now()`,
+        [newId],
+      );
+
+      // 2) FAILOVER ledger rows — visible to validateFencingToken (latest.reason)
+      for (const row of ledgerRows) {
+        await client.query(
+          `INSERT INTO lock_fencing_seq (lock_key, owner, token, instance_id, reason)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [row.lockKey, row.owner, row.token, row.instanceId, row.reason],
+        );
+      }
+
+      // 3) Soft bookkeeping: clear pg_locks (same as reclaim — holders must re-acquire)
+      if (activeKeys.length > 0) {
+        await client.query(`DELETE FROM pg_locks`);
+      }
+
+      await client.query(
+        `INSERT INTO audit_logs (actor_id, actor_role, action, resource_type, resource_id, detail)
+         VALUES (NULL, NULL, $1, 'redis', $2, $3)`,
+        [
+          'redis.failover_instance_rotated',
+          newId,
+          JSON.stringify({
+            reason: 'FAILOVER',
+            previousInstanceId,
+            newInstanceId: newId,
+            failoverLockKeys: ledgerRows.map((r) => r.lockKey),
+            activeLocksInvalidated: activeKeys.length,
+          }),
+        ],
+      );
+    });
+
+    // Redis after Postgres commit so a failed txn does not leave split-brain id
+    await redis.set(REDIS_INSTANCE_KEY, newId);
+    this.instanceId = newId;
+
     return newId;
   }
 

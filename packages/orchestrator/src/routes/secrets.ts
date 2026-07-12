@@ -19,8 +19,14 @@ export async function secretRoutes(app: FastifyInstance): Promise<void> {
 
       const secrets = await secretService.resolveDispatchJwe(body.jwe);
       if (!secrets) {
+        // L-02: structured 404 — do NOT use E007 (UID_DUPLICATE_AUTO_FIXED).
+        // This is dispatch JWE / secret-reference not found, not a UID issue.
         return reply.code(404).send({
-          error: { message: 'Secret not found, expired, already consumed, or invalid dispatch JWE' },
+          error: {
+            code: 'SECRET_NOT_FOUND',
+            message:
+              'Secret not found, expired, already consumed, or invalid dispatch JWE',
+          },
         });
       }
       return { secrets };

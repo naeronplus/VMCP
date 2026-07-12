@@ -76,19 +76,18 @@ export async function buildApp() {
     ts: new Date().toISOString(),
   }));
 
+  // M-09: Railway healthcheckPath must be /ready (not /health).
+  // /health is liveness only; /ready fails with 503 when Postgres or Redis is down.
   app.get('/ready', async (_req, reply) => {
-    try {
-      const { getPool } = await import('./db/pool.js');
-      const { getRedis } = await import('./lib/redis.js');
-      await getPool().query('SELECT 1');
-      await getRedis().ping();
-      return { ok: true };
-    } catch (err) {
-      return reply.code(503).send({
+    const { checkLiveReadiness } = await import('./services/readiness.js');
+    const result = await checkLiveReadiness();
+    if (!result.ok) {
+      return reply.code(result.statusCode).send({
         ok: false,
-        error: (err as Error).message,
+        error: result.error,
       });
     }
+    return { ok: true };
   });
 
   // Real-time job status WebSocket (§2.1)

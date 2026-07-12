@@ -320,12 +320,16 @@ export class JobService {
       'bundle.log',
     );
 
+    // L-05: surface orchestrator reimport policy to workers via JWE (not dead env).
+    const envCfg = getEnv();
     const envelopeBase: Omit<SecretEnvelope, 'expiresAt'> = {
       callbackToken: cb.token,
       fencingToken: acquire.token,
       lockKey,
       lockOwner: ownerId,
       targetProjectRoot: String(project.project_root ?? `/var/godot/projects/${job.projectId}`),
+      reimportTimeoutSec: Math.max(1, Math.ceil(envCfg.REIMPORT_TIMEOUT_MS / 1000)),
+      reimportMaxRetries: envCfg.REIMPORT_MAX_RETRIES,
       presignedUrls: {
         stagingPut: await s3Service.presignPut(stagingKey),
         stagingGet: await s3Service.presignGet(stagingKey),
@@ -351,6 +355,7 @@ export class JobService {
     if (cross.action === 'provision') {
       const ssh = generateEphemeralEd25519();
       const forcedCommand = 'commit-agent-once';
+      // SEC-01: mTLS PEM paths from env (optional per-project override later via metadata).
       const provision = await provisionPublicKey({
         targetProvisionUrl: cross.provisionUrl,
         publicKeyOpenSsh: ssh.publicKeyOpenSsh,
@@ -364,6 +369,9 @@ export class JobService {
         },
         maxSessions: 8,
         ttlSeconds: 300,
+        mtlsCert: envCfg.PGOS_PROVISION_MTLS_CERT || undefined,
+        mtlsKey: envCfg.PGOS_PROVISION_MTLS_KEY || undefined,
+        mtlsCa: envCfg.PGOS_PROVISION_MTLS_CA || undefined,
       });
       if (!provision.ok) {
         await this.failDispatchPreStart({
@@ -417,12 +425,15 @@ export class JobService {
         secretJwe: jwe,
       });
     } catch (err) {
-      await this.recordError(jobId, 'E001', `Dispatch failed: ${(err as Error).message}`);
+      // M-18: workflow_dispatch API failure (incl. GITHUB_MOCK_DISPATCH_FAIL) →
+      // DISPATCH_FAILED (retriable), not DISPATCH_TIMEOUT (runner never picked up).
+      const detail = `Dispatch failed: ${(err as Error).message}`;
+      await this.recordError(jobId, 'E001', detail);
       // Keep lock until handleFailure decides retry vs dead-letter
       await this.updateStatus(jobId, {
-        status: 'DISPATCH_TIMEOUT',
+        status: 'DISPATCH_FAILED',
         errorCode: 'E001',
-        errorDetail: (err as Error).message,
+        errorDetail: detail,
       });
       return;
     }
@@ -490,9 +501,13 @@ export class JobService {
       update.status !== current.status &&
       !canTransitionJobStatus(current.status, update.status)
     ) {
+      // M-02: E021 INVALID_STATUS_TRANSITION (E019 is script-override admin only)
       throw Object.assign(
         new Error(`Invalid status transition ${current.status} → ${update.status}`),
-        { statusCode: 409, code: 'E019' },
+        {
+          statusCode: ERROR_CATALOG.E021.httpStatus,
+          code: 'E021' as const,
+        },
       );
     }
 
@@ -503,7 +518,8 @@ export class JobService {
       (update.status === 'COMMITTING' || update.status === 'COMPLETED')
     ) {
       throw Object.assign(new Error('Commits blocked after REIMPORT_FAILED'), {
-        statusCode: 409,
+        statusCode: ERROR_CATALOG.E021.httpStatus,
+        code: 'E021' as const,
       });
     }
 
@@ -725,13 +741,16 @@ export class JobService {
       { jobId: `dlq-${jobId}`, removeOnComplete: false },
     );
 
+    // Audit + webhook immediately; enriched email to admin_contacts is owned by
+    // the pgos-dead-letter consumer (H-14 / M-03) to avoid duplicate mail.
     await sendAlert({
       title: 'Job moved to dead-letter queue',
       severity: 'high',
-      body: `Job ${jobId} failed ${job.attempt} times`,
+      body: `Job ${jobId} failed ${job.attempt} times — consumer will email project admin_contacts`,
       code: 'E020',
       jobId,
       projectId: job.projectId,
+      notifyEmail: false,
     });
 
     getWsHub()?.broadcast({

@@ -125,7 +125,15 @@ export async function jobRoutes(app: FastifyInstance): Promise<void> {
       }
       const body = (req.body ?? {}) as { fencingToken?: string };
       const result = await jobService.heartbeat(id, body.fencingToken);
-      if (!result.ok) return reply.code(403).send({ error: { message: 'Heartbeat rejected' } });
+      // L-01: fencing/heartbeat rejection is E013 (not a bare 403 without code)
+      if (!result.ok) {
+        return reply.code(403).send({
+          error: {
+            code: 'E013',
+            message: 'Heartbeat rejected (fencing token invalid, stale, or job missing)',
+          },
+        });
+      }
       return { ok: true };
     },
   );

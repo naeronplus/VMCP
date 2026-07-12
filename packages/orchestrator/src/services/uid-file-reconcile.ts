@@ -156,12 +156,23 @@ export async function reconcileProjectFiles(opts: {
   projectRoot: string;
   replacements: Map<string, string>;
   runGodot?: boolean;
+  /** Project metadata for H-03 remote auto-dispatch (targetHost, targetProvisionUrl). */
+  metadata?: Record<string, unknown> | null;
+  /** Injected for tests — defaults to dispatchUidReconcile. */
+  dispatchRemote?: (args: {
+    projectId: string;
+    projectRoot: string;
+    replacements: Map<string, string>;
+    metadata?: Record<string, unknown> | null;
+  }) => Promise<{ mode: 'remote_dispatched' | 'remote_script'; detail?: string; s3Key?: string }>;
 }): Promise<{
   filesTouched: string[];
   replacements: number;
   godotOk?: boolean;
-  mode: 'local' | 'remote_script';
+  mode: 'local' | 'remote_script' | 'remote_dispatched';
   detail?: string;
+  s3Key?: string;
+  workflowRunId?: number;
 }> {
   const rootReadable = await fs
     .stat(opts.projectRoot)
@@ -169,21 +180,29 @@ export async function reconcileProjectFiles(opts: {
     .catch(() => false);
 
   if (!rootReadable) {
-    await audit({
-      action: 'uid.nightly_reconcile',
-      resourceType: 'project',
-      resourceId: opts.projectId,
-      detail: {
-        mode: 'remote_script',
-        note: 'project_root not local; use workers/scripts/uid-reconcile.sh on host',
-        replacementCount: opts.replacements.size,
-      },
+    const dispatch =
+      opts.dispatchRemote ??
+      (async (args) => {
+        const { dispatchUidReconcile } = await import('./uid-remote-dispatch.js');
+        return dispatchUidReconcile(args);
+      });
+    const remote = await dispatch({
+      projectId: opts.projectId,
+      projectRoot: opts.projectRoot,
+      replacements: opts.replacements,
+      metadata: opts.metadata,
     });
     return {
       filesTouched: [],
       replacements: 0,
-      mode: 'remote_script',
-      detail: 'project_root not readable on orchestrator',
+      mode: remote.mode,
+      detail:
+        remote.mode === 'remote_dispatched'
+          ? 'uid_reconcile.yml dispatched'
+          : remote.detail ?? 'project_root not readable on orchestrator',
+      s3Key: 's3Key' in remote ? remote.s3Key : undefined,
+      workflowRunId:
+        'workflowRunId' in remote ? (remote as { workflowRunId?: number }).workflowRunId : undefined,
     };
   }
 

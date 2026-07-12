@@ -81,22 +81,7 @@ export class SecretService {
     return this.resolveByReference(referenceToken, jobId);
   }
 
-  /** Legacy path: callback bearer + reference jwe (job-scoped). */
-  async resolve(jwe: string, jobId: string): Promise<SecretEnvelope | null> {
-    let referenceToken: string;
-    try {
-      const { plaintext } = await jose.compactDecrypt(jwe, this.key());
-      const outer = JSON.parse(new TextDecoder().decode(plaintext)) as {
-        referenceToken: string;
-        jobId: string;
-      };
-      if (outer.jobId !== jobId) return null;
-      referenceToken = outer.referenceToken;
-    } catch {
-      return null;
-    }
-    return this.resolveByReference(referenceToken, jobId);
-  }
+  // L-06: legacy resolve(jwe, jobId) removed — zero callers; use resolveDispatchJwe only.
 
   private async verifyCallbackToken(jobId: string, token: string): Promise<boolean> {
     const { rows } = await getPool().query(

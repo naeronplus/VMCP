@@ -1,14 +1,16 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import crypto from 'node:crypto';
 import type { MergeOverrideRequest, Role } from '@vibrato/shared';
 import { assertWithinBase, isSafeLogicalAssetPath } from '@vibrato/shared';
 import { getPool } from '../db/pool.js';
 import { audit } from './audit-service.js';
-import { applyTscnPatch, type TscnPatch } from './tscn-merge.js';
+import type { TscnPatch } from './tscn-merge.js';
+import {
+  applyTscnToFilesystem,
+  pathIsReadableDir,
+} from './merge-apply.js';
 
 /**
  * Override merge with script-injection threat model (§9.3) + structural .tscn merge (H-02).
+ * Outbox rows are consumed by merge-outbox-worker (H-02 consumer).
  */
 
 export function patchIntroducesScript(patch: Record<string, unknown>): boolean {
@@ -51,15 +53,6 @@ export function resolveMergeMode(
   return 'local_fs';
 }
 
-async function pathIsReadableDir(dir: string): Promise<boolean> {
-  try {
-    const st = await fs.stat(dir);
-    return st.isDirectory();
-  } catch {
-    return false;
-  }
-}
-
 export async function applyMerge(
   req: MergeOverrideRequest,
   actor: { userId: string; role: Role },
@@ -78,9 +71,10 @@ export async function applyMerge(
 
   const introducesScript = patchIntroducesScript(req.patch);
   if (introducesScript && actor.role !== 'admin') {
+    // E019 is reserved for this script-override admin gate only (M-02)
     throw Object.assign(
       new Error('Override introduces executable script; admin scope required'),
-      { statusCode: 403, code: 'E019' },
+      { statusCode: 403, code: 'E019' as const },
     );
   }
 
@@ -88,8 +82,7 @@ export async function applyMerge(
   let mergedHash: string | undefined;
   let outboxId: string | undefined;
 
-  const fullPath = path.resolve(projectRoot, req.path);
-  // Re-validate resolved path
+  // Re-validate resolved path stays under project root
   assertWithinBase(projectRoot, req.path);
 
   const structuralOn =
@@ -102,24 +95,17 @@ export async function applyMerge(
       applyMode = 'outbox';
     } else if (req.path.endsWith('.tscn')) {
       try {
-        const base = await fs.readFile(fullPath, 'utf8');
-        const merged = applyTscnPatch(base, req.patch as TscnPatch);
-        mergedHash = crypto.createHash('sha256').update(merged).digest('hex');
-        const tmp = `${fullPath}.pgos-merge-${process.pid}-${Date.now()}`;
-        await fs.writeFile(tmp, merged, 'utf8');
-        await fs.rename(tmp, fullPath);
+        const applied = await applyTscnToFilesystem(
+          projectRoot,
+          req.path,
+          req.patch as TscnPatch,
+        );
+        mergedHash = applied.mergedHash;
         applyMode = 'local_fs';
       } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code === 'ENOENT') {
-          throw Object.assign(
-            new Error(
-              `Base .tscn not found at ${req.path} — create the scene on the project host first`,
-            ),
-            { statusCode: 404, code: 'E014' },
-          );
-        }
-        // Unreadable → fall back to outbox
+        const status = (err as { statusCode?: number }).statusCode;
+        if (status === 404) throw err;
+        // Unreadable / IO → fall back to outbox for host-side consumer
         applyMode = 'outbox';
       }
     }

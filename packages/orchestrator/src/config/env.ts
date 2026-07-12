@@ -58,6 +58,31 @@ const envSchema = z.object({
       if (v === 'false' || v === '0') return false;
       return process.env.NODE_ENV !== 'production';
     }),
+  /**
+   * M-18: When true **and** GITHUB_MOCK, dispatchWorkflow throws so local E2E
+   * can exercise DISPATCH_FAILED handling without a real GitHub App.
+   */
+  GITHUB_MOCK_DISPATCH_FAIL: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1')
+    .default('false'),
+  /**
+   * M-18: Mock getRunStatus conclusion when GITHUB_MOCK is true.
+   * success | failure | cancelled | timed_out | action_required | neutral | skipped
+   */
+  GITHUB_MOCK_RUN_CONCLUSION: z
+    .enum([
+      'success',
+      'failure',
+      'cancelled',
+      'timed_out',
+      'action_required',
+      'neutral',
+      'skipped',
+    ])
+    .optional()
+    .default('success'),
 
   DISPATCH_TIMEOUT_MS: z.coerce.number().default(60_000),
   DISPATCH_POLL_INTERVAL_MS: z.coerce.number().default(5_000),
@@ -67,7 +92,15 @@ const envSchema = z.object({
   TIER_A_QUEUE_THRESHOLD: z.coerce.number().default(3),
   CALLBACK_TOKEN_TTL_MS: z.coerce.number().default(300_000),
   GODOT_DEFAULT_VERSION: z.string().default('4.3.1'),
+  /**
+   * L-05: Embedded in dispatch JWE as reimportTimeoutSec for workers
+   * (run-generation / post-commit-verify REIMPORT_TIMEOUT_SEC).
+   */
   REIMPORT_TIMEOUT_MS: z.coerce.number().default(300_000),
+  /**
+   * L-05: Embedded in dispatch JWE as reimportMaxRetries for workers
+   * (REIMPORT_MAX_RETRIES).
+   */
   REIMPORT_MAX_RETRIES: z.coerce.number().default(2),
 
   SLACK_WEBHOOK_URL: z.string().optional().default(''),
@@ -77,6 +110,22 @@ const envSchema = z.object({
 
   SANDBOX_SERVICE_URL: z.string().default('http://localhost:8090'),
   SANDBOX_INTERNAL_TOKEN: z.string().default('dev-sandbox-token'),
+
+  /**
+   * SEC-02 / DEP-01: Bearer for target JIT SSH provisioner (`POST …/v1/provision`).
+   * Prefer this over SANDBOX_INTERNAL_TOKEN. Empty → orchestrator falls back to
+   * SANDBOX_INTERNAL_TOKEN with a deprecation warning (dev only; required in prod).
+   */
+  PGOS_PROVISION_TOKEN: z.string().optional().default(''),
+
+  /**
+   * SEC-01: optional client mTLS PEM paths for provision HTTP client.
+   * When either is set, both CERT and KEY are required (production-validation).
+   */
+  PGOS_PROVISION_MTLS_CERT: z.string().optional().default(''),
+  PGOS_PROVISION_MTLS_KEY: z.string().optional().default(''),
+  /** Optional CA PEM path to trust target provisioner server cert (SEC-01). */
+  PGOS_PROVISION_MTLS_CA: z.string().optional().default(''),
 
   JWE_SECRET: z.string().default('change-me-to-a-32-byte-or-longer-secret!!'),
 

@@ -10,10 +10,19 @@ import {
 import { closePool, getPool } from './db/pool.js';
 import { closeRedis, getRedis } from './lib/redis.js';
 import { registerWorkers, closeWorkers } from './lib/worker-manager.js';
+import { ensureOrchestratorCacheDir } from './lib/orchestrator-cache.js';
 
 async function main(): Promise<void> {
   const env = getEnv();
   const app = await buildApp();
+  // L-05: materialize ORCHESTRATOR_CACHE_DIR so the configured path is live
+  try {
+    const cacheDir = ensureOrchestratorCacheDir();
+    app.log.info({ cacheDir }, 'orchestrator cache dir ready');
+  } catch (err) {
+    if (env.NODE_ENV === 'production') throw err;
+    app.log.warn({ err }, 'orchestrator cache dir not created');
+  }
 
   const shutdown = async (signal: string, exitCode = 0) => {
     app.log.info(`Shutting down on ${signal}`);
@@ -43,7 +52,7 @@ async function main(): Promise<void> {
     validateProductionEnv(env, { adminExists: admins.length > 0 });
     await verifyStartupConnectivity();
     await lockService.ensureInstanceId();
-    registerWorkers(startHealthWorkers());
+    registerWorkers(await startHealthWorkers());
     await scheduleRepeatableJobs();
   } catch (err) {
     if (env.NODE_ENV === 'production') {

@@ -1,6 +1,7 @@
 {
   "name": "@vibrato/orchestrator",
   "version": "1.0.0",
+  "license": "MIT",
   "private": true,
   "type": "module",
   "main": "./dist/index.js",

@@ -15,7 +15,7 @@ export interface AuthPrincipal {
   role: Role;
   jti: string;
   email?: string;
-  kind: 'api_token' | 'session' | 'callback';
+  kind: 'api_token' | 'session' | 'callback' | 'service';
   jobId?: string;
 }
 

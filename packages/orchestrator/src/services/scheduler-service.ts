@@ -82,6 +82,7 @@ export class SchedulerService {
     tier: WorkerTier,
     coldStartMs: number,
     degraded: boolean,
+    metadata?: Record<string, unknown>,
   ): Promise<void> {
     await getPool().query(
       `UPDATE tier_health
@@ -90,15 +91,55 @@ export class SchedulerService {
              $2
            ),
            last_probe_at = now(),
-           degraded = $3
+           degraded = $3,
+           metadata = CASE
+             WHEN $4::jsonb IS NULL THEN metadata
+             ELSE COALESCE(metadata, '{}'::jsonb) || $4::jsonb
+           END
        WHERE tier = $1`,
-      [tier, coldStartMs, degraded],
+      [
+        tier,
+        coldStartMs,
+        degraded,
+        metadata ? JSON.stringify(metadata) : null,
+      ],
     );
   }
 
-  async getTierHealth(): Promise<unknown[]> {
-    const { rows } = await getPool().query(`SELECT * FROM tier_health ORDER BY tier`);
-    return rows;
+  /**
+   * GET /tiers — flatten M-04 probe metrics from metadata onto each row.
+   */
+  async getTierHealth(): Promise<Record<string, unknown>[]> {
+    const { rows } = await getPool().query(
+      `SELECT * FROM tier_health ORDER BY tier`,
+    );
+    return rows.map((row) => {
+      const meta =
+        row.metadata && typeof row.metadata === 'object'
+          ? (row.metadata as Record<string, unknown>)
+          : {};
+      return {
+        ...row,
+        // Explicit top-level fields for dashboard / operators (6.7.3)
+        tier_b_runner_online:
+          row.tier === 'B'
+            ? (meta.tier_b_runner_online as boolean | undefined) ?? null
+            : null,
+        godot_cache_warm:
+          (meta.godot_cache_warm as boolean | null | undefined) ?? null,
+        probe_source: (meta.probe_source as string | undefined) ?? null,
+        probe_detail: (meta.probe_detail as string | undefined) ?? null,
+        probe_checked_at: (meta.probe_checked_at as string | undefined) ?? null,
+        last_health_run_id:
+          (meta.last_health_run_id as number | null | undefined) ?? null,
+        last_health_run_conclusion:
+          (meta.last_health_run_conclusion as string | null | undefined) ?? null,
+        last_health_run_age_ms:
+          (meta.last_health_run_age_ms as number | null | undefined) ?? null,
+        actions_api_ok:
+          (meta.actions_api_ok as boolean | null | undefined) ?? null,
+      };
+    });
   }
 }
 
