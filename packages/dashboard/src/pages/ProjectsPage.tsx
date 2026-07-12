@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, ApiError, type ProjectRow } from '../api/client';
-import { canCreateProject } from '../lib/rbac';
+import { api, ApiError, type ProjectRow, type UidReservation } from '../api/client';
+import { canCreateProject, canEnqueueJob } from '../lib/rbac';
 
 export function ProjectsPage({ role }: { role: string }) {
   const [projects, setProjects] = useState<ProjectRow[]>([]);
@@ -10,7 +10,11 @@ export function ProjectsPage({ role }: { role: string }) {
   const [projectRoot, setProjectRoot] = useState('/var/godot/projects/demo');
   const [godotVersion, setGodotVersion] = useState('4.3.1');
   const [highVolume, setHighVolume] = useState(false);
+  const [uidProjectId, setUidProjectId] = useState('');
+  const [logicalPath, setLogicalPath] = useState('res://assets/gen/item.tscn');
+  const [lastReservation, setLastReservation] = useState<UidReservation | null>(null);
   const admin = canCreateProject(role);
+  const canReserve = canEnqueueJob(role);
 
   const refresh = useCallback(async () => {
     const r = await api.projects();
@@ -18,10 +22,16 @@ export function ProjectsPage({ role }: { role: string }) {
   }, []);
 
   useEffect(() => {
-    void refresh().catch((e) => {
-      setError(e instanceof ApiError ? `${e.code ?? e.status}: ${e.message}` : String(e));
-    });
+    void refresh()
+      .then((/* side-effect: set default uid project */) => undefined)
+      .catch((e) => {
+        setError(e instanceof ApiError ? `${e.code ?? e.status}: ${e.message}` : String(e));
+      });
   }, [refresh]);
+
+  useEffect(() => {
+    if (!uidProjectId && projects[0]) setUidProjectId(projects[0].id);
+  }, [projects, uidProjectId]);
 
   return (
     <>
@@ -29,6 +39,7 @@ export function ProjectsPage({ role }: { role: string }) {
         <h1>Projects</h1>
         <span className="muted">
           {admin ? 'Admin can create projects' : 'Read-only list'}
+          {canReserve ? ' · operator can reserve UIDs' : ''}
         </span>
       </div>
       {error && <div className="error-text">{error}</div>}
@@ -130,6 +141,63 @@ export function ProjectsPage({ role }: { role: string }) {
           </div>
         )}
       </div>
+
+      {canReserve && projects.length > 0 && (
+        <div className="panel" style={{ marginTop: '1rem' }}>
+          <h2 style={{ marginTop: 0, fontSize: '1rem' }}>UID reservation</h2>
+          <p className="muted" style={{ marginTop: 0 }}>
+            POST /projects/:id/uid-reservations — concurrent-safe TMP- UID for a logical path
+          </p>
+          <div className="row-actions" style={{ flexWrap: 'wrap', gap: 8 }}>
+            <select
+              className="btn"
+              value={uidProjectId}
+              onChange={(e) => setUidProjectId(e.target.value)}
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <input
+              className="btn"
+              style={{ minWidth: 280 }}
+              value={logicalPath}
+              onChange={(e) => setLogicalPath(e.target.value)}
+              placeholder="res://path/to/asset.tscn"
+            />
+            <button
+              type="button"
+              className="btn primary"
+              onClick={async () => {
+                setError('');
+                try {
+                  const r = await api.uidReserve(uidProjectId, {
+                    logicalAssetPath: logicalPath,
+                    namespace: 'GEN-',
+                  });
+                  setLastReservation(r.reservation);
+                } catch (e) {
+                  setError(
+                    e instanceof ApiError
+                      ? `${e.code ?? e.status}: ${e.message}`
+                      : String(e),
+                  );
+                }
+              }}
+            >
+              Reserve UID
+            </button>
+          </div>
+          {lastReservation && (
+            <div className="muted mono" style={{ marginTop: 12 }}>
+              reserved id={lastReservation.id.slice(0, 8)} uid={lastReservation.uid} path=
+              {lastReservation.logicalAssetPath}
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }

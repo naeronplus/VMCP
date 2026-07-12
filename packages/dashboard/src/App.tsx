@@ -13,6 +13,7 @@ import { TiersPage } from './pages/TiersPage';
 import { ExtensionsPage } from './pages/ExtensionsPage';
 import { ErrorsPage } from './pages/ErrorsPage';
 import { DocsPage } from './pages/DocsPage';
+import { AuditLogsPage } from './pages/AuditLogsPage';
 
 export function App() {
   const [user, setUser] = useState<{ email: string; role: string } | null | undefined>(
@@ -54,8 +55,9 @@ export function App() {
           )}
           <NavLink to="/tiers">Tiers & parity</NavLink>
           {canAccess(role, '/extensions') && (
-            <NavLink to="/extensions">Extension approvals</NavLink>
+            <NavLink to="/extensions">Extensions</NavLink>
           )}
+          {canAccess(role, '/audit') && <NavLink to="/audit">Audit logs</NavLink>}
           <NavLink to="/errors">Error catalog</NavLink>
           <NavLink to="/docs">AGENTS.md</NavLink>
         </nav>
@@ -94,14 +96,24 @@ export function App() {
               )
             }
           />
-          <Route path="/tiers" element={<TiersPage />} />
+          <Route path="/tiers" element={<TiersPage role={role} />} />
           <Route
             path="/extensions"
             element={
               canAccess(role, '/extensions') ? (
                 <ExtensionsPage role={role} />
               ) : (
-                <PermissionDenied resource="Extension approvals" required="admin" />
+                <PermissionDenied resource="Extensions" required="admin" />
+              )
+            }
+          />
+          <Route
+            path="/audit"
+            element={
+              canAccess(role, '/audit') ? (
+                <AuditLogsPage />
+              ) : (
+                <PermissionDenied resource="Audit logs" required="admin" />
               )
             }
           />

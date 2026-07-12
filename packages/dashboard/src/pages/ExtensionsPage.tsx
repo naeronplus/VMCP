@@ -1,34 +1,80 @@
-import { useEffect, useState } from 'react';
-import { api, ApiError, type ApprovalRow } from '../api/client';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  api,
+  ApiError,
+  type ApprovalRow,
+  type ExtensionPolicyRow,
+} from '../api/client';
 
 export function ExtensionsPage({ role }: { role: string }) {
   const [approvals, setApprovals] = useState<ApprovalRow[]>([]);
+  const [policies, setPolicies] = useState<ExtensionPolicyRow[]>([]);
   const [error, setError] = useState('');
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     setError('');
     try {
-      const r = await api.approvals();
-      setApprovals(r.approvals);
+      const [a, p] = await Promise.all([api.approvals(), api.listExtensions()]);
+      setApprovals(a.approvals);
+      setPolicies(p.policies);
     } catch (e) {
-      setError(
-        e instanceof ApiError ? `${e.code ?? e.status}: ${e.message}` : String(e),
-      );
+      setError(e instanceof ApiError ? `${e.code ?? e.status}: ${e.message}` : String(e));
     }
-  }
+  }, []);
 
   useEffect(() => {
     void refresh();
-  }, []);
+  }, [refresh]);
 
   return (
     <>
       <div className="header">
-        <h1>Extension network approvals</h1>
-        <span className="muted">Network egress blocked until admin approval (§10.1)</span>
+        <h1>Extensions</h1>
+        <span className="muted">
+          Policies (GET /extensions) · network approvals blocked until admin sign-off
+        </span>
       </div>
       {error && <div className="error-text">{error}</div>}
+
+      <div className="panel" style={{ marginBottom: '1rem' }}>
+        <div className="panel-header">
+          <strong>Registered policies</strong>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Name</th>
+              <th>Network</th>
+              <th>Domains</th>
+              <th>Godot range</th>
+            </tr>
+          </thead>
+          <tbody>
+            {policies.map((p) => (
+              <tr key={p.extension_id}>
+                <td className="mono">{p.extension_id}</td>
+                <td>{p.name}</td>
+                <td>
+                  <span className={`badge ${p.network_allowed ? 'ok' : 'warn'}`}>
+                    {p.network_allowed ? 'allowed' : 'denied'}
+                  </span>
+                </td>
+                <td className="mono muted">{(p.approved_domains ?? []).join(', ') || '—'}</td>
+                <td className="mono">{p.godot_version_range ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {policies.length === 0 && !error && (
+          <div className="empty">No extension policies registered</div>
+        )}
+      </div>
+
       <div className="panel">
+        <div className="panel-header">
+          <strong>Pending network approvals</strong>
+        </div>
         <table>
           <thead>
             <tr>
@@ -50,6 +96,7 @@ export function ExtensionsPage({ role }: { role: string }) {
                   {role === 'admin' && (
                     <>
                       <button
+                        type="button"
                         className="btn primary"
                         onClick={async () => {
                           try {
@@ -67,6 +114,7 @@ export function ExtensionsPage({ role }: { role: string }) {
                         Approve
                       </button>
                       <button
+                        type="button"
                         className="btn"
                         onClick={async () => {
                           try {

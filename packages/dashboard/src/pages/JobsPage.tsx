@@ -15,8 +15,23 @@ export function JobsPage({ role }: { role: string }) {
     'same-machine' | 'cross-machine'
   >('same-machine');
   const [dependsOnJobId, setDependsOnJobId] = useState('');
+  const [selectedJob, setSelectedJob] = useState<JobRow | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const canEnqueue = canEnqueueJob(role);
+
+  async function openJob(id: string) {
+    setDetailLoading(true);
+    setError('');
+    try {
+      const r = await api.getJob(id);
+      setSelectedJob(r.job);
+    } catch (e) {
+      setError(e instanceof ApiError ? `${e.code ?? e.status}: ${e.message}` : String(e));
+    } finally {
+      setDetailLoading(false);
+    }
+  }
 
   const refresh = useCallback(async () => {
     const [j, p] = await Promise.all([
@@ -176,7 +191,12 @@ export function JobsPage({ role }: { role: string }) {
           </thead>
           <tbody>
             {jobs.map((j) => (
-              <tr key={j.id}>
+              <tr
+                key={j.id}
+                style={{ cursor: 'pointer' }}
+                title="Load full job via GET /jobs/:id"
+                onClick={() => void openJob(j.id)}
+              >
                 <td className="mono">{j.id}</td>
                 <td>
                   <span className="badge info">{j.status}</span>
@@ -188,6 +208,7 @@ export function JobsPage({ role }: { role: string }) {
                     <a
                       href={`/api/v1/docs/errors/${j.errorCode}`}
                       title={j.errorDetail ?? ''}
+                      onClick={(e) => e.stopPropagation()}
                     >
                       {j.errorCode}
                     </a>
@@ -202,6 +223,22 @@ export function JobsPage({ role }: { role: string }) {
         </table>
         {jobs.length === 0 && <div className="empty">No jobs</div>}
       </div>
+
+      {(selectedJob || detailLoading) && (
+        <div className="panel" style={{ marginTop: '1rem' }}>
+          <div className="panel-header">
+            <strong>Job detail {detailLoading ? '(loading…)' : ''}</strong>
+            <button type="button" className="btn" onClick={() => setSelectedJob(null)}>
+              Close
+            </button>
+          </div>
+          {selectedJob && (
+            <pre className="mono" style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 12 }}>
+              {JSON.stringify(selectedJob, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
     </>
   );
 }

@@ -21,9 +21,15 @@ describe('dashboard RBAC (H-07)', () => {
     assert.equal(canCreateProject('operator'), false);
   });
 
-  it('admin can access extensions and create projects', () => {
+  it('admin can access extensions, audit logs, and create projects', () => {
     assert.equal(canAccess('admin', '/extensions'), true);
+    assert.equal(canAccess('admin', '/audit'), true);
     assert.equal(canAccess('admin', '/dead-letter'), true);
     assert.equal(canCreateProject('admin'), true);
+  });
+
+  it('viewer cannot access audit logs', () => {
+    assert.equal(canAccess('viewer', '/audit'), false);
+    assert.equal(canAccess('operator', '/audit'), false);
   });
 });

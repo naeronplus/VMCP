@@ -10,6 +10,7 @@ export type DashboardRoute =
   | '/dead-letter'
   | '/tiers'
   | '/extensions'
+  | '/audit'
   | '/errors'
   | '/docs';
 
@@ -21,6 +22,7 @@ const ROUTE_MIN_ROLE: Record<DashboardRoute, DashboardRole | null> = {
   '/dead-letter': 'operator',
   '/tiers': 'viewer',
   '/extensions': 'admin',
+  '/audit': 'admin',
   '/errors': 'viewer',
   '/docs': 'viewer',
 };

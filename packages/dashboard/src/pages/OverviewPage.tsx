@@ -1,20 +1,48 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api, type JobRow, type LockRow, type TierRow } from '../api/client';
+import { usePgosWebSocket } from '../hooks/usePgosWebSocket';
 
 export function OverviewPage() {
   const [jobs, setJobs] = useState<JobRow[]>([]);
   const [locks, setLocks] = useState<LockRow[]>([]);
   const [tiers, setTiers] = useState<TierRow[]>([]);
+  const [live, setLive] = useState(false);
+
+  const refresh = useCallback(async () => {
+    const [j, l, t] = await Promise.all([api.jobs(), api.locks(), api.tiers()]);
+    setJobs(j.jobs);
+    setLocks(l.locks);
+    setTiers(t.tiers);
+  }, []);
 
   useEffect(() => {
-    void Promise.all([api.jobs(), api.locks(), api.tiers()]).then(
-      ([j, l, t]) => {
-        setJobs(j.jobs);
-        setLocks(l.locks);
-        setTiers(t.tiers);
-      },
-    );
-  }, []);
+    void refresh();
+  }, [refresh]);
+
+  // L-09: WebSocket live updates on Overview (not Jobs-only)
+  const projectIds = Array.from(new Set(jobs.map((j) => j.projectId).filter(Boolean)));
+  usePgosWebSocket({
+    projectIds,
+    enabled: true,
+    onEvent: (ev) => {
+      setLive(true);
+      if (ev.type === 'job.updated' && ev.payload && typeof ev.payload === 'object') {
+        const updated = ev.payload as JobRow;
+        setJobs((prev) => {
+          const idx = prev.findIndex((j) => j.id === updated.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = { ...next[idx], ...updated };
+            return next;
+          }
+          return [updated, ...prev].slice(0, 50);
+        });
+      }
+      if (ev.type === 'lock.updated' || ev.type === 'tier.updated') {
+        void refresh();
+      }
+    },
+  });
 
   const active = jobs.filter((j) =>
     ['QUEUED', 'DISPATCHING', 'STAGING', 'VALIDATING', 'COMMITTING', 'BLOCKED'].includes(
@@ -31,7 +59,10 @@ export function OverviewPage() {
     <>
       <div className="header">
         <h1>Overview</h1>
-        <span className="muted">Railway-first orchestrator · S3 artifacts · push dispatch</span>
+        <span className="muted">
+          Railway-first orchestrator · S3 artifacts · push dispatch
+          {live ? ' · live' : ''}
+        </span>
       </div>
       <div className="card-grid">
         <div className="card">
