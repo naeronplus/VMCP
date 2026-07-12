@@ -1,0 +1,27 @@
+[Unit]
+Description=PGOS target JIT SSH provisioner (DEP-01)
+Documentation=https://github.com/vibrato/pgos/tree/main/packages/target-provisioner
+After=network.target
+
+[Service]
+Type=simple
+User=root
+# Dedicated provision token — NOT SANDBOX_INTERNAL_TOKEN (SEC-02)
+Environment=PGOS_PROVISION_TOKEN=change-me
+Environment=AUTHORIZED_KEYS_DIR=/etc/ssh/pgos-authorized-keys.d
+Environment=PGOS_KEYS_LEDGER=/var/lib/pgos/keys-ledger.json
+Environment=PGOS_PROVISION_LISTEN=127.0.0.1:9071
+# Prefer EnvironmentFile for secrets:
+# EnvironmentFile=-/etc/pgos/target-provisioner.env
+ExecStart=/usr/local/bin/pgos-target-provisioner
+Restart=on-failure
+RestartSec=2
+# Harden
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/etc/ssh/pgos-authorized-keys.d /var/lib/pgos
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
