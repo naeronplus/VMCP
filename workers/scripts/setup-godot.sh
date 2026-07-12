@@ -78,10 +78,16 @@ TEMPLATE_URL="https://github.com/godotengine/godot/releases/download/${VERSION}-
 TEMPLATE_CACHE="${CACHE_DIR}/${TEMPLATE_ARCHIVE}"
 TEMPLATE_DIR="${HOME}/.local/share/godot/export_templates/${VERSION}.stable"
 
-if [[ ! -d "$TEMPLATE_DIR" ]]; then
+install_templates() {
   echo "Installing export templates for ${VERSION}..."
   if [[ ! -f "$TEMPLATE_CACHE" ]]; then
     curl -fsSL -o "$TEMPLATE_CACHE" "$TEMPLATE_URL"
+  fi
+  # Record template archive checksum for audit / future integrity checks
+  if command -v sha256sum >/dev/null; then
+    sha256sum "$TEMPLATE_CACHE" | awk '{print $1}' > "${TEMPLATE_CACHE}.sha256"
+  elif command -v shasum >/dev/null; then
+    shasum -a 256 "$TEMPLATE_CACHE" | awk '{print $1}' > "${TEMPLATE_CACHE}.sha256"
   fi
   TMP_TPL="/tmp/godot-templates-${VERSION}"
   rm -rf "$TMP_TPL"
@@ -89,5 +95,24 @@ if [[ ! -d "$TEMPLATE_DIR" ]]; then
   unzip -o -q "$TEMPLATE_CACHE" -d "$TMP_TPL"
   mkdir -p "$TEMPLATE_DIR"
   cp -a "$TMP_TPL"/templates/* "$TEMPLATE_DIR/" 2>/dev/null || cp -a "$TMP_TPL"/* "$TEMPLATE_DIR/"
-  echo "Export templates installed at $TEMPLATE_DIR"
+  # Ensure version.txt for verify-godot.sh exact match
+  if [[ ! -f "${TEMPLATE_DIR}/version.txt" ]]; then
+    echo "${VERSION}.stable" > "${TEMPLATE_DIR}/version.txt"
+  fi
+  # Mirror under workspace cache for runners that resolve templates from .godot-cache
+  CACHE_TPL="${CACHE_DIR}/export_templates/${VERSION}.stable"
+  mkdir -p "$(dirname "$CACHE_TPL")"
+  rm -rf "$CACHE_TPL"
+  cp -a "$TEMPLATE_DIR" "$CACHE_TPL"
+  echo "Export templates installed at $TEMPLATE_DIR (cache mirror: $CACHE_TPL)"
+}
+
+if [[ ! -d "$TEMPLATE_DIR" ]] || [[ -z "$(ls -A "$TEMPLATE_DIR" 2>/dev/null || true)" ]]; then
+  install_templates
+else
+  # Refresh version.txt if missing so E006 template check can validate
+  if [[ ! -f "${TEMPLATE_DIR}/version.txt" ]]; then
+    echo "${VERSION}.stable" > "${TEMPLATE_DIR}/version.txt"
+  fi
+  echo "Export templates already present at $TEMPLATE_DIR"
 fi

@@ -41,8 +41,9 @@ Target host env / systemd:
 Heartbeat runs for the **entire** generation → commit → post-commit window inside one GHA step (`Execute job pipeline`, C-01). Interval default **15s**; orchestrator stale threshold `HEARTBEAT_STALE_AFTER_MS` (default 30000).
 
 1. `resolve-secrets.sh` — POST `/api/v1/resolve-secret` with dispatch JWE  
-2. setup Godot + version check  
-3. **Single step** with `pgos-lifecycle.sh` heartbeat:  
+2. `setup-godot.sh` — install Godot + export templates  
+3. `verify-godot.sh` — **exact** semver match (not substring) + export template presence (`E006`)  
+4. **Single step** with `pgos-lifecycle.sh` heartbeat:  
    - `run-generation.sh`  
    - `atomic-commit.sh`  
    - `post-commit-verify.sh`
@@ -93,9 +94,23 @@ Job metadata **must** include both `targetHost` and `targetProvisionUrl` or disp
 | `atomic-commit.sh` | S3 snapshot (same-machine) + fenced commit |
 | `post-commit-verify.sh` | Reimport + rollback |
 | `run-generation.sh` | Stage, reimport, validate |
-| `setup-godot.sh` | Install Godot + templates |
+| `setup-godot.sh` | Install Godot + templates (+ version.txt, cache mirror) |
+| `verify-godot.sh` | Exact semver + export templates pre-generation (E006); uses `lib/godot-semver.mjs` |
 | `resolve-secrets.sh` | JWE → env |
 | `uid-reconcile.sh` | Host-side UID rewrite + Godot reimport when project tree is not on orchestrator |
+
+### E006 version / template checks (H-09 / H-10)
+
+`verify-godot.sh` replaces naive `grep -F` matching so **`4.3.1` does not match `4.3.10`**.
+
+- Parses `godot --version` first line via Node exact semver equality (`lib/godot-semver.mjs`, aligned with `@vibrato/shared` `versionsEqual`).
+- Requires export templates under `~/.local/share/godot/export_templates/{version}.stable/` (or `.godot-cache` mirror), non-empty, with `version.txt` match when present.
+- On failure: PATCH job `VALIDATION_FAILED` + **E006** with detail distinguishing **version** vs **templates**.
+
+```bash
+# Local unit tests (no Godot binary required)
+node --test workers/tests/godot-semver.test.mjs
+```
 
 ## Cross-machine E2E checklist (P0 gate)
 

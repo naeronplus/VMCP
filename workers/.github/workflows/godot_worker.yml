@@ -64,18 +64,8 @@ jobs:
       - name: Setup Godot with checksum fallback
         run: bash workers/scripts/setup-godot.sh "${{ inputs.godotVersion }}"
 
-      - name: Verify exact Godot version
-        run: |
-          INSTALLED=$(godot --version | head -n1 | tr -d '\r')
-          echo "Installed: $INSTALLED requested: ${GODOT_VERSION}"
-          echo "$INSTALLED" | grep -F "${GODOT_VERSION}" || {
-            echo "EXPORT_TEMPLATE_MISMATCH / version drift E006"
-            curl -sS -X PATCH "${PGOS_BASE_URL}/api/v1/jobs/${JOB_ID}/status" \
-              -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d "{\"status\":\"VALIDATION_FAILED\",\"errorCode\":\"E006\",\"errorDetail\":\"version ${INSTALLED} != ${GODOT_VERSION}\"}"
-            exit 1
-          }
+      - name: Verify exact Godot version + export templates (E006)
+        run: bash workers/scripts/verify-godot.sh "${{ inputs.godotVersion }}"
 
       - name: Report STAGING
         run: |

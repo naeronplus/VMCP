@@ -20,8 +20,8 @@ This forces reimport, populates `.godot/imported/`, and surfaces `uid://` resolu
 ### Version matching
 
 - Dispatch always includes `godotVersion` (e.g. `4.3.1`).
-- Worker must run `godot --version` and **fail fast** on mismatch (E006).
-- Export templates must match the editor version.
+- Worker runs `workers/scripts/verify-godot.sh` for **exact** major.minor.patch equality (not substring match — `4.3.1` ≠ `4.3.10`) and export template presence (E006).
+- Export templates must match the editor version under `export_templates/{version}.stable/`.
 
 ### Cache keys
 

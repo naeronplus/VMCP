@@ -52,6 +52,9 @@ jobs:
       - name: Worker S3 helper smoke test
         run: bash workers/tests/pgos-s3-smoke.sh
 
+      - name: Godot semver / template validation unit tests (H-09/H-10)
+        run: node --test workers/tests/godot-semver.test.mjs
+
   commit-agent:
     runs-on: ubuntu-latest
     steps:
