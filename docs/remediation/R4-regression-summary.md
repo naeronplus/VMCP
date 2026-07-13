@@ -1,8 +1,8 @@
 # R4 Security & Deployment Hardening — Verification Summary
 
-**Date:** 2026-07-12  
+**Date:** 2026-07-13  
 **Plan:** plan.md §9 Phase R4  
-**Scope:** SEC-02, SEC-01, CM-LOCK-01, DEP-02, DEP-03  
+**Scope:** SEC-02, SEC-01, CM-LOCK-01, DEP-02, DEP-03, DEP-04, NODE-DRIFT, MINIO-HC  
 **Gate:** **PASSED** — safe to proceed to R5  
 **Method:** `npm run verify:r4` → `scripts/verify-r4-security-deployment.mjs`
 
@@ -15,6 +15,9 @@
 | CM-LOCK-01 | 4 checks | ✅ | 4/4 pass |
 | DEP-02 | 4 checks | ✅ | 4/4 pass |
 | DEP-03 | 5 checks | ✅ | 5/5 pass |
+| DEP-04 | 3 checks | ✅ | 3/3 pass |
+| NODE-DRIFT | 2 checks | ✅ | 2/2 pass |
+| MINIO-HC | 2 checks | ✅ | 2/2 pass |
 
 ## Automated suite
 
@@ -25,9 +28,9 @@
 | target-provisioner go test | ✅ |
 | pgos-remote-protocol-smoke (stat-lock) | ✅ |
 
-Full command output: `docs/remediation/R4-baseline-2026-07-12.log` (gitignored).
+Full command output: `docs/remediation/R4-baseline-2026-07-13.log` (gitignored).
 
-## All checks (28/28)
+## All checks (35/35)
 
 | ID | Check | Result | Evidence |
 |----|-------|--------|----------|
@@ -52,11 +55,18 @@ Full command output: `docs/remediation/R4-baseline-2026-07-12.log` (gitignored).
 | DEP-02 | commit-agent-once uses COMMIT_AGENT_BIN default | ✅ | bin/commit-agent-once |
 | DEP-02 | CI uploads commit-agent artifact | ✅ | ci.yml |
 | DEP-02 | docker-compose / README link install.sh | ✅ | compose + README |
+| DEP-04 | CI builds and uploads target-provisioner-linux-amd64 | ✅ | ci.yml |
+| DEP-04 | target-provisioner install.sh exists (DEP-02 parity) | ✅ | packages/target-provisioner/scripts/install.sh |
+| DEP-04 | target-provisioner README documents install.sh + CI artifact | ✅ | packages/target-provisioner/README.md |
+| NODE-DRIFT | orchestrator Dockerfile uses node:20 (both stages) | ✅ | packages/orchestrator/Dockerfile |
+| NODE-DRIFT | sandbox-service Dockerfile uses node:20 (both stages) | ✅ | packages/sandbox-service/Dockerfile |
 | DEP-03 | orchestrator healthcheck hits /ready | ✅ | docker-compose.yml |
 | DEP-03 | sandbox healthcheck hits /health | ✅ | docker-compose.yml |
 | DEP-03 | depends_on sandbox service_healthy for orchestrator | ✅ | docker-compose.yml |
 | DEP-03 | orchestrator depends_on sandbox with service_healthy | ✅ | docker-compose.yml orchestrator |
 | DEP-03 | README Option A documents compose healthy /ready wait | ✅ | README.md |
+| MINIO-HC | minio healthcheck hits /minio/health/live | ✅ | docker-compose.yml minio |
+| MINIO-HC | minio-init depends_on minio service_healthy | ✅ | docker-compose.yml minio-init |
 | SEC-01 | target-provisioner go test (TLS config) | ✅ | PASS |
 | SEC-02 | verify:r4 registered in package.json | ✅ | package.json |
 

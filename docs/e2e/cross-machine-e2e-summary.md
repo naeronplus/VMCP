@@ -1,10 +1,12 @@
 # Cross-machine E2E — Summary (TEST-01)
 
-**Date:** 2026-07-12  
-**Plan:** plan.md §11.1  
+**Date:** 2026-07-13  
+**Plan:** plan.md §11.1 + §7.2 + §7.3 + P6  
 **Mode:** automated  
-**Gate:** **7/7 PASS**  
-**Log:** `docs/e2e/cross-machine-e2e-2026-07-12.log` (secrets redacted)
+**Gate:** **8/8 PASS** · live **operator residual** (attempt recorded; no LIVE PASS yet)  
+**Log:** `docs/e2e/cross-machine-e2e-2026-07-13.log` (secrets redacted)  
+**Live attempt:** `docs/e2e/cross-machine-e2e-live-2026-07-13-attempt.log`  
+**Report:** TEST-01 **FIXED** with live residual (`report.md` 2026-07-13)
 
 ## Scenario results
 
@@ -17,30 +19,33 @@
 | 5 | Reimport fail → S3 snapshot rollback | ✅ PASS | PASS |
 | 6 | Host backup only (S3 disabled break-glass) | ✅ PASS | PASS |
 | 7 | Editor lock on target (stat-lock / E012) | ✅ PASS | PASS |
+| 8 | Remote merge outbox (envelope → apply → complete) | ✅ PASS | PASS |
 
-## Definition of Done (plan §11.1.4)
 
-- [x] All 7 scenarios pass (automated validators)
+## Definition of Done (plan §11.1.4 / §7.2 / §7.3)
+
+- [x] All 7 core scenarios pass (automated validators)
+- [x] Scenario 8 remote merge outbox (envelope → apply → complete)
+- [x] All 8 automated scenarios pass
 - [x] Evidence committed (secrets redacted)
-- [x] TEST-01 closed in `report.md`
+- [ ] Live API supplement with `LIVE PASS` marker (`cross-machine-e2e-live-*.log`)
 
 ## Re-run
 
 ```bash
-npm run verify:r6
-# or scenario driver only:
+# automated 8/8
 node scripts/run-cross-machine-e2e.mjs
-```
-
-## Operator live sign-off (optional)
-
-Trigger `.github/workflows/e2e_cross_machine.yml` on a `godot-worker` runner with production secrets, or:
-
-```bash
+# mandatory live (writes cross-machine-e2e-live-<date>.log)
 export PGOS_BASE_URL='https://…'
 export PGOS_ADMIN_TOKEN='…'
 node scripts/run-cross-machine-e2e.mjs --mode live
+npm run verify:r6
 ```
+
+## Operator live sign-off
+
+See **Mandatory live sign-off** in `docs/e2e/cross-machine-e2e.md`.  
+Workflow default: `runLiveApi=1` on `.github/workflows/e2e_cross_machine.yml`.
 
 ---
 

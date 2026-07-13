@@ -164,7 +164,8 @@ export async function scheduleRepeatableJobs(): Promise<void> {
 
   await secretRotationQueue.add(
     'rotate-agent-secrets',
-    { targetRotateUrl: process.env.AGENT_ROTATE_URL ?? '' },
+    // ENV-01: schema-backed AGENT_ROTATE_URL (no raw process.env)
+    { targetRotateUrl: getEnv().AGENT_ROTATE_URL || '' },
     {
       repeat: { pattern: '0 4 1 */3 *' },
       jobId: 'repeat-secret-rotation',

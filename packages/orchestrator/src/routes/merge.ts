@@ -19,8 +19,9 @@ async function authenticateMergeOutboxComplete(
   if (auth?.startsWith('Bearer ')) {
     const token = auth.slice(7);
     const env = getEnv();
+    // ENV-02: prefer schema-backed PGOS_SERVICE_TOKEN (no raw process.env)
     const serviceTokens = [
-      process.env.PGOS_SERVICE_TOKEN,
+      env.PGOS_SERVICE_TOKEN,
       env.SANDBOX_INTERNAL_TOKEN,
     ].filter((t): t is string => Boolean(t && t.length > 8));
     if (serviceTokens.includes(token)) {

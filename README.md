@@ -48,7 +48,7 @@ Branch protection on `main` (require CI status checks, no force-push, enforce ad
 
 ### Prerequisites
 
-- Node.js 20+ (see `.nvmrc`)
+- Node.js 20+ (see `.nvmrc`; **production containers use Node 20** — `packages/orchestrator/Dockerfile` and `packages/sandbox-service/Dockerfile` are `node:20-*`, matching CI)
 - Docker + Compose (Postgres, Redis, MinIO, optional full app stack)
 - Go 1.22+ (commit-agent + target-provisioner)
 - Optional: Godot 4.3+ for worker scripts
@@ -214,7 +214,7 @@ Workers alone advance lifecycle through `PATCH /jobs/:id/status` with a short-li
 | Nightly UID reconcile | BullMQ `pgos-uid-reconcile` + local file rewrite; remote auto-dispatch `uid_reconcile.yml` when `metadata.targetHost` set (H-03) |
 | Extension sandbox | `sandbox-service` network deny-by-default; **production default `SANDBOX_BACKEND=worker_thread`** (H-08 Path B); Firecracker real optional + fail-closed if advertised |
 | dependsOnJobId ordering | Create/dispatch/promote gates (BLOCKED until COMPLETED; E011 on dep failure) |
-| Structural `.tscn` merge | `POST /merge` local FS or merge_outbox; **consumer applies/dispatches** every 5m (H-02); script patches require admin (E019) |
+| Structural `.tscn` merge | `POST /merge` → local FS **or** `merge_outbox`; consumer every 5m (H-02). **Remote (true cross-machine):** patch on S3 → `merge_apply.yml` with **`secretJwe` only** (no raw SSH) → Tier A runner `resolve-secrets` → `merge-apply.sh` → commit-agent **`merge-apply`** verb on target via ForcedCommand → `POST /merge-outbox/:id/complete`. Script patches require admin (E019). Gate: `npm run verify:r7` |
 | Tier parity | `parity_canary.yml` + dashboard |
 | Dead-letter 24/72h | Consumer emails project `admin_contacts` (+ `ADMIN_EMAIL` CC); hourly 24h/72h escalate |
 | Token revocation | Redis set + Postgres `token_revocations` |

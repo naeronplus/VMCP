@@ -1,4 +1,5 @@
-FROM node:22-bookworm-slim AS build
+# NODE-DRIFT: align production image with .nvmrc / CI (Node 20)
+FROM node:20-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 COPY packages/shared/package.json packages/shared/
@@ -16,7 +17,7 @@ RUN npm run build -w @vibrato/shared \
  && npm run build -w @vibrato/dashboard \
  && npm run build -w @vibrato/orchestrator
 
-FROM node:22-bookworm-slim
+FROM node:20-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app /app

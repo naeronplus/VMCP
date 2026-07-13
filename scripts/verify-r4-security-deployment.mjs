@@ -4,6 +4,7 @@
  *
  * SEC-02 dedicated provision token · SEC-01 mTLS · CM-LOCK-01 stat-lock
  * DEP-02 install.sh · DEP-03 compose healthchecks
+ * DEP-04 target-provisioner artifact · NODE-DRIFT Node 20 · MINIO-HC
  *
  * No shortcuts: real unit tests + Go tests + static contracts.
  *
@@ -20,7 +21,16 @@ const date = new Date().toISOString().slice(0, 10);
 const logPath = join(root, 'docs', 'remediation', `R4-baseline-${date}.log`);
 const summaryPath = join(root, 'docs', 'remediation', 'R4-regression-summary.md');
 
-const R4_FINDING_IDS = ['SEC-02', 'SEC-01', 'CM-LOCK-01', 'DEP-02', 'DEP-03'];
+const R4_FINDING_IDS = [
+  'SEC-02',
+  'SEC-01',
+  'CM-LOCK-01',
+  'DEP-02',
+  'DEP-03',
+  'DEP-04',
+  'NODE-DRIFT',
+  'MINIO-HC',
+];
 
 const log = [];
 const checks = [];
@@ -240,6 +250,55 @@ record(
   'compose + README',
 );
 
+// ── DEP-04 (target-provisioner CI artifact + install) ──────────────
+
+const ciYml = read('.github/workflows/ci.yml');
+const tpInstall = 'packages/target-provisioner/scripts/install.sh';
+record(
+  'DEP-04',
+  'CI builds and uploads target-provisioner-linux-amd64',
+  ciYml.includes('target-provisioner-linux-amd64') &&
+    ciYml.includes('go build -o /tmp/pgos-target-provisioner') &&
+    ciYml.includes('upload-artifact'),
+  'ci.yml',
+);
+record(
+  'DEP-04',
+  'target-provisioner install.sh exists (DEP-02 parity)',
+  existsSync(join(root, tpInstall)) &&
+    read(tpInstall).includes('go build') &&
+    read(tpInstall).includes('PROVISIONER_BIN'),
+  tpInstall,
+);
+record(
+  'DEP-04',
+  'target-provisioner README documents install.sh + CI artifact',
+  read('packages/target-provisioner/README.md').includes('install.sh') &&
+    read('packages/target-provisioner/README.md').includes(
+      'target-provisioner-linux-amd64',
+    ),
+  'packages/target-provisioner/README.md',
+);
+
+// ── NODE-DRIFT (production containers Node 20) ─────────────────────
+
+const orchDocker = read('packages/orchestrator/Dockerfile');
+const sandboxDocker = read('packages/sandbox-service/Dockerfile');
+record(
+  'NODE-DRIFT',
+  'orchestrator Dockerfile uses node:20 (both stages)',
+  (orchDocker.match(/FROM node:20/g) || []).length >= 2 &&
+    !orchDocker.includes('node:22'),
+  'packages/orchestrator/Dockerfile',
+);
+record(
+  'NODE-DRIFT',
+  'sandbox-service Dockerfile uses node:20 (both stages)',
+  (sandboxDocker.match(/FROM node:20/g) || []).length >= 2 &&
+    !sandboxDocker.includes('node:22'),
+  'packages/sandbox-service/Dockerfile',
+);
+
 // ── DEP-03 ─────────────────────────────────────────────────────────
 
 const compose = read('docker-compose.yml');
@@ -281,6 +340,33 @@ record(
   readme.includes('DEP-03') ||
     (readme.includes('/ready') && readme.includes('healthy')),
   'README.md',
+);
+
+// ── MINIO-HC ───────────────────────────────────────────────────────
+
+const minioBlock = (() => {
+  const i = compose.indexOf('minio:');
+  if (i < 0) return '';
+  // Until minio-init service
+  const j = compose.indexOf('minio-init:', i + 1);
+  return j > i ? compose.slice(i, j) : compose.slice(i, i + 800);
+})();
+record(
+  'MINIO-HC',
+  'minio healthcheck hits /minio/health/live',
+  minioBlock.includes('healthcheck:') &&
+    minioBlock.includes('/minio/health/live'),
+  'docker-compose.yml minio',
+);
+const minioInitIdx = compose.indexOf('minio-init:');
+const minioInitBlock =
+  minioInitIdx >= 0 ? compose.slice(minioInitIdx, minioInitIdx + 500) : '';
+record(
+  'MINIO-HC',
+  'minio-init depends_on minio service_healthy',
+  minioInitBlock.includes('minio:') &&
+    minioInitBlock.includes('service_healthy'),
+  'docker-compose.yml minio-init',
 );
 
 // ── target-provisioner go tests (SEC-01 TLS unit) ──────────────────
@@ -333,7 +419,7 @@ const summary = `# R4 Security & Deployment Hardening — Verification Summary
 
 **Date:** ${date}  
 **Plan:** plan.md §9 Phase R4  
-**Scope:** SEC-02, SEC-01, CM-LOCK-01, DEP-02, DEP-03  
+**Scope:** SEC-02, SEC-01, CM-LOCK-01, DEP-02, DEP-03, DEP-04, NODE-DRIFT, MINIO-HC  
 **Gate:** ${failed === 0 ? '**PASSED** — safe to proceed to R5' : '**FAILED** — fix blockers before R5'}  
 **Method:** \`npm run verify:r4\` → \`scripts/verify-r4-security-deployment.mjs\`
 

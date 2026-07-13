@@ -31,8 +31,10 @@
     "verify:r4": "node scripts/verify-r4-security-deployment.mjs",
     "verify:r5": "node scripts/verify-r5-medium-low-hygiene.mjs",
     "verify:r6": "node scripts/verify-r6-e2e-gate.mjs",
+    "verify:r7": "node scripts/verify-r7-h02-remote-merge.mjs",
     "verify:workflow-mirrors": "node scripts/verify-workflow-mirrors.mjs",
-    "e2e:cross-machine": "node scripts/run-cross-machine-e2e.mjs"
+    "e2e:cross-machine": "node scripts/run-cross-machine-e2e.mjs",
+    "e2e:fetch-live": "node scripts/fetch-live-e2e-evidence.mjs"
   },
   "engines": {
     "node": ">=20"

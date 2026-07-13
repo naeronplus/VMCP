@@ -112,6 +112,24 @@ const envSchema = z.object({
   SANDBOX_INTERNAL_TOKEN: z.string().default('dev-sandbox-token'),
 
   /**
+   * ENV-01: Bearer token commit-agents use for POST /locks/validate-token.
+   * Cross-ref packages/commit-agent README (`PGOS_AGENT_TOKEN` / -auth-token).
+   */
+  PGOS_AGENT_TOKEN: z.string().optional().default(''),
+
+  /**
+   * ENV-01: Optional URL health-worker secret-rotation cron calls for target key rotation.
+   */
+  AGENT_ROTATE_URL: z.string().optional().default(''),
+
+  /**
+   * ENV-02 / H-02: Service token for merge-outbox complete callback
+   * (`POST /api/v1/merge-outbox/:id/complete`) and sealed into merge_apply JWE.
+   * Also used by merge_apply.yml as PGOS_SERVICE_TOKEN Actions secret fallback.
+   */
+  PGOS_SERVICE_TOKEN: z.string().optional().default(''),
+
+  /**
    * SEC-02 / DEP-01: Bearer for target JIT SSH provisioner (`POST …/v1/provision`).
    * Prefer this over SANDBOX_INTERNAL_TOKEN. Empty → orchestrator falls back to
    * SANDBOX_INTERNAL_TOKEN with a deprecation warning (dev only; required in prod).

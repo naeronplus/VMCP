@@ -102,11 +102,9 @@ export async function buildMergeApplyDispatchEnvelope(opts: {
     'targetProvisionUrl',
     'target_provision_url',
   );
-  // PGOS_SERVICE_TOKEN lands in env schema in ENV-02; accept process.env until then.
+  // ENV-02: schema-backed PGOS_SERVICE_TOKEN (getEnv); sandbox fallback for local dev.
   const callbackToken = resolveMergeServiceToken({
-    PGOS_SERVICE_TOKEN:
-      process.env.PGOS_SERVICE_TOKEN ??
-      (env as { PGOS_SERVICE_TOKEN?: string }).PGOS_SERVICE_TOKEN,
+    PGOS_SERVICE_TOKEN: env.PGOS_SERVICE_TOKEN,
     SANDBOX_INTERNAL_TOKEN: env.SANDBOX_INTERNAL_TOKEN,
   });
   if (!callbackToken) {

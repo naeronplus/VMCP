@@ -9,10 +9,11 @@
 # DEP-03: orchestrator healthcheck hits GET /ready; sandbox hits GET /health.
 # Compose waits for service_healthy before dependents start (where declared).
 #
-# Commit-agent is NOT run in Compose — install on target hosts for cross-machine:
+# Commit-agent + target-provisioner are NOT run in Compose — install on target hosts:
 #   bash packages/commit-agent/scripts/install.sh
-#   # or: COMMIT_AGENT_BIN=/opt/pgos/bin/commit-agent bash packages/commit-agent/scripts/install.sh
-#   See packages/commit-agent/README.md (DEP-02) and workers/README.md.
+#   bash packages/target-provisioner/scripts/install.sh
+#   See packages/commit-agent/README.md (DEP-02), packages/target-provisioner/README.md (DEP-04).
+# MINIO-HC: minio healthcheck + minio-init waits for service_healthy.
 #
 # Optional hot-reload profile (host-mounted source):
 #   docker compose --profile dev up
@@ -58,14 +59,21 @@ services:
       - "9001:9001"
     volumes:
       - pgos_minio:/data
+    # MINIO-HC: live health before minio-init / S3-dependent services
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
 
   minio-init:
     image: minio/mc:latest
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      sleep 3;
       mc alias set local http://minio:9000 minioadmin minioadmin;
       mc mb -p local/pgos-artifacts || true;
       exit 0;

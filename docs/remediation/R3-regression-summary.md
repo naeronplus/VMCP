@@ -1,6 +1,6 @@
 # R3 Test & CI Expansion — Verification Summary
 
-**Date:** 2026-07-12  
+**Date:** 2026-07-13  
 **Plan:** plan.md §8 Phase R3  
 **Scope:** TEST-02 (ws-hub tests) + TEST-03 (9/9 worker CI smokes)  
 **Gate:** **PASSED** — safe to proceed to R4  
@@ -21,7 +21,7 @@
 | 9/9 worker bash smokes | ✅ (9/9) |
 | ci.yml TEST-03 wiring | ✅ |
 
-Full command output: `docs/remediation/R3-baseline-2026-07-12.log` (gitignored).
+Full command output: `docs/remediation/R3-baseline-2026-07-13.log` (gitignored).
 
 ## All checks (23/23)
 

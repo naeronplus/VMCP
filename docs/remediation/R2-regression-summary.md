@@ -1,6 +1,6 @@
 # R2 High Partial Completion — Verification Summary
 
-**Date:** 2026-07-12  
+**Date:** 2026-07-13  
 **Plan:** plan.md §7 Phase R2  
 **Scope:** H-02 (merge outbox consumer) + H-03 (remote UID dispatch) + H-08 (worker_thread policy)  
 **Gate:** **PASSED** — safe to proceed to R3  
@@ -10,7 +10,7 @@
 
 | ID | Scope | Result | Evidence |
 |----|-------|--------|----------|
-| H-02 | 8 contract + test checks | ✅ | 8/8 pass |
+| H-02 | 11 contract + test checks | ✅ | 11/11 pass |
 | H-03 | 7 contract + test checks | ✅ | 7/7 pass |
 | H-08 | 6 contract + test checks | ✅ | 6/6 pass |
 
@@ -22,9 +22,9 @@
 | sandbox-service H-08 tests | ✅ |
 | verify-workflow-mirrors.mjs | ✅ |
 
-Full command output: `docs/remediation/R2-baseline-2026-07-12.log` (gitignored).
+Full command output: `docs/remediation/R2-baseline-2026-07-13.log` (gitignored).
 
-## All checks (24/24)
+## All checks (27/27)
 
 | ID | Check | Result | Evidence |
 |----|-------|--------|----------|
@@ -34,6 +34,9 @@ Full command output: `docs/remediation/R2-baseline-2026-07-12.log` (gitignored).
 | H-02 | merge outbox consumer + merge_apply workflow + host script | ✅ | all present |
 | H-02 | BullMQ pgos-merge-outbox + 5m cron + startMergeOutboxWorker | ✅ | health-worker.ts + queues.ts |
 | H-02 | Local applyTscnToFilesystem + remote merge_apply.yml dispatch | ✅ | merge-outbox-worker.ts |
+| H-02 | commit-agent main.go defines merge-apply verb (H-02-MERGE-VERB) | ✅ | packages/commit-agent/cmd/agent/main.go |
+| H-02 | merge_apply.yml secretJwe + resolve-secrets (H-02-WORKFLOW-SSH) | ✅ | merge_apply.yml |
+| H-02 | merge-outbox-dispatch.ts envelope module exists | ✅ | merge-outbox-dispatch.ts |
 | H-02 | merge-apply.sh: local tscn-merge + POST /merge-outbox/:id/complete | ✅ | merge-apply.sh |
 | H-02 | POST /merge-outbox/:id/complete marks applied + overrides.merged_hash | ✅ | routes/merge.ts |
 | H-02 | merge-service creates merge_outbox pending row when root unreadable | ✅ | merge-service.ts |

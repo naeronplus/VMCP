@@ -94,6 +94,15 @@ jobs:
       - name: TEST-01 scenario 7 editor-lock cross-machine smoke
         run: bash workers/tests/editor-lock-cross-machine-smoke.sh
 
+      - name: H-02 merge-apply remote SSH path smoke
+        run: bash workers/tests/merge-apply-remote-smoke.sh
+
+      - name: H-02 merge-apply commit-agent verb smoke
+        run: bash workers/tests/merge-apply-verb-smoke.sh
+
+      - name: TEST-01 scenario 8 merge-outbox e2e smoke
+        run: bash workers/tests/merge-outbox-e2e-smoke.sh
+
   commit-agent:
     runs-on: ubuntu-latest
     steps:
@@ -120,4 +129,15 @@ jobs:
         with:
           name: commit-agent-linux-amd64
           path: /tmp/commit-agent
+          if-no-files-found: error
+
+      - name: Build target-provisioner (DEP-04)
+        working-directory: packages/target-provisioner
+        run: go build -o /tmp/pgos-target-provisioner ./cmd/provisioner
+
+      - name: Upload target-provisioner artifact (DEP-04)
+        uses: actions/upload-artifact@v4
+        with:
+          name: target-provisioner-linux-amd64
+          path: /tmp/pgos-target-provisioner
           if-no-files-found: error

@@ -39,9 +39,12 @@ Workers execute Godot generation jobs that the orchestrator starts with `workflo
 |--------|---------|---------|
 | `PGOS_BASE_URL` | All worker workflows | Orchestrator public URL (e.g. `https://pgos.example.com`) |
 | `PGOS_ADMIN_TOKEN` | `godot_health.yml`, `parity_canary.yml` | Operator/admin JWT for probe ingest / parity POST |
+| `PGOS_SERVICE_TOKEN` | `merge_apply.yml` | Bearer for `POST /api/v1/merge-outbox/:id/complete` when JWE omits `callbackToken` (ENV-02; prefer token sealed in `secretJwe`) |
 | `SLACK_WEBHOOK_URL` | Health, parity, perf (optional) | High-severity operator alerts |
 
 Repo secrets are configured under GitHub → Settings → Secrets and variables → Actions.
+
+**Never** put SSH private keys or long-lived tokens in `workflow_dispatch` inputs. Cross-machine and merge-apply material travels only inside **`secretJwe`**, resolved by `workers/scripts/resolve-secrets.sh`.
 
 ---
 
@@ -111,9 +114,43 @@ Requires `PGOS_BASE_URL` + `PGOS_ADMIN_TOKEN` for full probe ingest.
 
 Fails the analyze job when robust median exceeds `PERF_P95_MS` (default **60000**).
 
+### `merge_apply.yml` — remote structural merge (H-02)
+
+| | |
+|--|--|
+| **Trigger** | `workflow_dispatch` only (orchestrator `pgos-merge-outbox` consumer) |
+| **Runner** | Tier A only: `self-hosted` + `godot-worker` |
+| **Timeout** | 30 minutes |
+| **Inputs** | **`secretJwe`** (required), `outboxId`, `projectId`, `path`, `projectRoot`, `patchGetUrl`, `s3Key` (optional) |
+
+**Step order**
+
+1. Checkout  
+2. `resolve-secrets.sh` — JWE → `CALLBACK_TOKEN`, **`TARGET_HOST`**, `TARGET_PROJECT_ROOT`, ephemeral SSH key file (`/tmp/pgos-ssh-key-${JOB_ID}`), optional sealed outbox fields  
+3. `merge-apply.sh` — local FS apply **or** ForcedCommand `merge-apply` on target  
+
+| Env after resolve | Source | Role |
+|-------------------|--------|------|
+| `TARGET_HOST` | JWE `targetHost` | Required when `PROJECT_ROOT` is not a local directory on the runner |
+| `TARGET_PROJECT_ROOT` | JWE `targetProjectRoot` | Preferred over workflow `projectRoot` input |
+| `CALLBACK_TOKEN` | JWE `callbackToken` | Preferred complete-callback bearer |
+| `PGOS_SERVICE_TOKEN` | GitHub Actions secret | Fallback complete-callback bearer |
+| `JOB_ID` | `merge-${outboxId}` | Scopes SSH key + token file paths |
+
+**Remote apply (when project tree is only on the target host):**
+
+```text
+pgos_ssh_agent_stdin "merge-apply <project_root> <rel_path>"  < patch.json
+→ commit-agent merge-apply on TARGET_HOST
+→ stdout {"ok":true,"mergedHash":"…","path":"…"}
+→ POST ${PGOS_BASE_URL}/api/v1/merge-outbox/${OUTBOX_ID}/complete
+```
+
+Smokes: `workers/tests/merge-apply-remote-smoke.sh`, `workers/tests/merge-apply-verb-smoke.sh`. Gate: `npm run verify:r7`.
+
 ### `ci.yml` (repo root only)
 
-Monorepo typecheck/lint/test/build, workflow mirror verify, shellcheck, Go tests — not a Godot worker.
+Monorepo typecheck/lint/test/build, workflow mirror verify, shellcheck, Go tests, H-02 merge-apply smokes — not a Godot worker.
 
 ---
 
@@ -367,13 +404,34 @@ bash workers/scripts/uid-reconcile.sh /var/godot/projects/<projectId> ./replacem
 
 ### `merge-apply.sh` (host structural merge, H-02)
 
-**Automatic:** `merge_outbox` consumer (`pgos-merge-outbox` every 5m) applies locally when `project_root` is readable; otherwise dispatches **`merge_apply.yml`** with a presigned patch URL. This script merges the patch into the live `.tscn` and may `POST /api/v1/merge-outbox/:id/complete`.
+**Automatic:** `merge_outbox` consumer (`pgos-merge-outbox` every 5m) applies locally when orchestrator `project_root` is readable; otherwise dispatches **`merge_apply.yml`** with patch on S3 + **`secretJwe`** (SSH / callback sealed). This script is the runner entrypoint.
+
+| Mode | Condition | Behavior |
+|------|-----------|----------|
+| Local | `PROJECT_ROOT` is a directory on the runner | Node + `lib/tscn-merge.mjs`; atomic `*.pgos-merge-<pid>` → rename |
+| Remote | Root not local **and** `TARGET_HOST` set (from JWE via `resolve-secrets`) | `pgos_ssh_agent_stdin "merge-apply …"` → commit-agent on target |
+| Fail | Root not local **and** `TARGET_HOST` unset | Exit non-zero (do not invent co-location) |
+
+**Complete callback:** on success (local or remote), `POST /api/v1/merge-outbox/:id/complete` with `{"mergedHash":"…"}` using `CALLBACK_TOKEN` or `PGOS_SERVICE_TOKEN`.
 
 ```bash
+# Local co-located tree (break-glass / debug)
 PROJECT_ROOT=/var/godot/projects/<id> \
 REL_PATH=scenes/main.tscn \
 PATCH_FILE=./patch.json \
 OUTBOX_ID=<uuid> \
+PGOS_BASE_URL=https://pgos.example.com \
+CALLBACK_TOKEN=<token> \
+bash workers/scripts/merge-apply.sh
+
+# Remote (normal after resolve-secrets on merge_apply.yml)
+# TARGET_HOST and SSH key come from secretJwe — never workflow inputs
+export TARGET_HOST=deploy@godot-target.example
+export PROJECT_ROOT=/var/godot/projects/<id>   # path ON the target
+export REL_PATH=scenes/main.tscn
+export PATCH_GET_URL=https://s3…/patch.json
+export OUTBOX_ID=<uuid>
+export JOB_ID=merge-<uuid>
 bash workers/scripts/merge-apply.sh
 ```
 

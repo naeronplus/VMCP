@@ -74,16 +74,51 @@ export function validateProvisionMtlsProduction(env: {
 }
 
 /**
+ * Structural merge / merge_outbox consumer is on unless emergency-disabled.
+ * (merge-service uses the same PGOS_STRUCTURAL_MERGE process env convention.)
+ */
+export function isMergeOutboxEnabled(
+  processEnv: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const v = processEnv.PGOS_STRUCTURAL_MERGE;
+  return v !== '0' && v !== 'false';
+}
+
+/**
+ * ENV-02: dedicated service token for merge-outbox complete + merge_apply JWE.
+ * Required in production when structural merge / outbox is enabled.
+ */
+export function validateServiceTokenProduction(
+  serviceToken: string | undefined,
+  mergeOutboxEnabled: boolean,
+): string[] {
+  if (!mergeOutboxEnabled) return [];
+  const tok = (serviceToken ?? '').trim();
+  if (!tok) {
+    return [
+      'PGOS_SERVICE_TOKEN is required in production when structural merge/outbox is enabled (ENV-02 / H-02 merge-outbox complete callback)',
+    ];
+  }
+  if (tok.length < 16) {
+    return [
+      'PGOS_SERVICE_TOKEN must be at least 16 characters in production (ENV-02)',
+    ];
+  }
+  return [];
+}
+
+/**
  * Fail fast when production is misconfigured (secrets, GitHub, S3, crypto).
  * BOOTSTRAP_ADMIN_PASSWORD is required only when no admin user exists yet.
  */
 export function validateProductionEnv(
   env: Env,
-  opts?: { adminExists?: boolean },
+  opts?: { adminExists?: boolean; processEnv?: NodeJS.ProcessEnv },
 ): void {
   if (env.NODE_ENV !== 'production') return;
 
   const errors: string[] = [];
+  const processEnv = opts?.processEnv ?? process.env;
 
   if (!hasRs256Keys(env)) {
     errors.push(
@@ -106,6 +141,21 @@ export function validateProductionEnv(
     ...validateProvisionTokenProduction(env.PGOS_PROVISION_TOKEN, env.SANDBOX_INTERNAL_TOKEN),
   );
   errors.push(...validateProvisionMtlsProduction(env));
+
+  // ENV-02: merge-outbox complete + remote merge_apply JWE
+  errors.push(
+    ...validateServiceTokenProduction(
+      env.PGOS_SERVICE_TOKEN,
+      isMergeOutboxEnabled(processEnv),
+    ),
+  );
+
+  // ENV-01: warn (do not fail) when commit-agent fencing token is empty
+  if (!(env.PGOS_AGENT_TOKEN ?? '').trim()) {
+    console.warn(
+      '[pgos] ENV-01: PGOS_AGENT_TOKEN is empty — commit-agent fencing validation (POST /locks/validate-token) will fail until set (see packages/commit-agent README)',
+    );
+  }
 
   if (env.GITHUB_MOCK) {
     errors.push('GITHUB_MOCK must be false in production');

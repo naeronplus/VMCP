@@ -50,7 +50,25 @@ command="commit-agent-once",no-port-forwarding,no-X11-forwarding,no-agent-forwar
 
 Files: `$AUTHORIZED_KEYS_DIR/pgos-{jobId}-{keyId}.pub` mode `0600`.
 
-## Install
+## Install (DEP-04)
+
+### One-command (preferred)
+
+```bash
+# From monorepo root on the target host (requires Go, or SKIP_BUILD=1 + prebuilt binary)
+sudo bash packages/target-provisioner/scripts/install.sh
+
+# Build + install systemd unit + start:
+sudo INSTALL_SYSTEMD=1 bash packages/target-provisioner/scripts/install.sh
+
+# From CI artifact (no Go on target):
+# Download Actions artifact target-provisioner-linux-amd64 → packages/target-provisioner/bin/pgos-target-provisioner
+sudo SKIP_BUILD=1 bash packages/target-provisioner/scripts/install.sh
+```
+
+`install.sh` installs the binary (default `/usr/local/bin/pgos-target-provisioner`), creates `/etc/ssh/pgos-authorized-keys.d`, `/var/lib/pgos`, and a template `/etc/pgos/target-provisioner.env`.
+
+### Manual
 
 ```bash
 cd packages/target-provisioner
@@ -61,6 +79,10 @@ mkdir -p /etc/ssh/pgos-authorized-keys.d /var/lib/pgos
 systemctl daemon-reload
 systemctl enable --now pgos-target-provisioner
 ```
+
+### CI artifact
+
+GitHub Actions (`ci.yml` → job `commit-agent`) builds and uploads **`target-provisioner-linux-amd64`** after `go test` (DEP-04), next to `commit-agent-linux-amd64` (DEP-02).
 
 ### Environment
 

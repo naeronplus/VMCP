@@ -1,6 +1,6 @@
 # R1 Critical Production Blockers — Verification Summary
 
-**Date:** 2026-07-12  
+**Date:** 2026-07-13  
 **Plan:** plan.md §6 Phase R1  
 **Scope:** DEP-01 (target-provisioner) + C-03 (remote pre-commit S3 snapshot)  
 **Gate:** **PASSED** — safe to proceed to R2  
@@ -24,7 +24,7 @@
 | snapshot-rollback-smoke.sh | ✅ |
 | pgos-remote-protocol-smoke.sh | ✅ |
 
-Full command output: `docs/remediation/R1-baseline-2026-07-12.log` (gitignored).
+Full command output: `docs/remediation/R1-baseline-2026-07-13.log` (gitignored).
 
 ## All checks (27/27)
 

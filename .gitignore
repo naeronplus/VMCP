@@ -27,3 +27,7 @@ REMEDIATION_BASELINE.md
 agent-tools/
 mcps/
 terminals/
+
+# DEP-04 local builds
+packages/target-provisioner/bin/*
+

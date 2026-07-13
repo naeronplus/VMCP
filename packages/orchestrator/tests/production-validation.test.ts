@@ -4,6 +4,8 @@ import {
   validateProductionEnv,
   validateProvisionTokenProduction,
   validateProvisionMtlsProduction,
+  validateServiceTokenProduction,
+  isMergeOutboxEnabled,
 } from '../src/config/production-validation.js';
 import type { Env } from '../src/config/env.js';
 
@@ -53,6 +55,9 @@ function baseEnv(overrides: Partial<Env> = {}): Env {
     ADMIN_EMAIL: '',
     SANDBOX_SERVICE_URL: 'http://localhost:8090',
     SANDBOX_INTERNAL_TOKEN: 'prod-sandbox-token-32chars-minimum!!',
+    PGOS_AGENT_TOKEN: 'prod-agent-token-for-fencing-validate!!',
+    AGENT_ROTATE_URL: '',
+    PGOS_SERVICE_TOKEN: 'prod-service-token-merge-outbox!!',
     PGOS_PROVISION_TOKEN: 'prod-provision-token-dedicated-sec02!!',
     PGOS_PROVISION_MTLS_CERT: '',
     PGOS_PROVISION_MTLS_KEY: '',
@@ -173,6 +178,56 @@ describe('production env validation', () => {
         PGOS_PROVISION_MTLS_KEY: '/k.pem',
       }).length,
       0,
+    );
+  });
+
+  // ── ENV-02 PGOS_SERVICE_TOKEN ──────────────────────────────────────
+  it('ENV-02: fails when PGOS_SERVICE_TOKEN empty and merge outbox enabled', () => {
+    assert.throws(
+      () =>
+        validateProductionEnv(baseEnv({ PGOS_SERVICE_TOKEN: '' }), {
+          adminExists: true,
+          processEnv: {},
+        }),
+      /PGOS_SERVICE_TOKEN|ENV-02/,
+    );
+  });
+
+  it('ENV-02: allows empty service token when structural merge disabled', () => {
+    assert.doesNotThrow(() =>
+      validateProductionEnv(baseEnv({ PGOS_SERVICE_TOKEN: '' }), {
+        adminExists: true,
+        processEnv: { PGOS_STRUCTURAL_MERGE: '0' },
+      }),
+    );
+  });
+
+  it('ENV-02: fails when PGOS_SERVICE_TOKEN shorter than 16 chars', () => {
+    const errs = validateServiceTokenProduction('short', true);
+    assert.ok(errs.some((e) => e.includes('16 characters')));
+  });
+
+  it('ENV-02: validateServiceTokenProduction accepts dedicated token', () => {
+    assert.deepEqual(
+      validateServiceTokenProduction('prod-service-token-merge-outbox!!', true),
+      [],
+    );
+  });
+
+  it('ENV-02: isMergeOutboxEnabled respects PGOS_STRUCTURAL_MERGE', () => {
+    assert.equal(isMergeOutboxEnabled({}), true);
+    assert.equal(isMergeOutboxEnabled({ PGOS_STRUCTURAL_MERGE: '0' }), false);
+    assert.equal(isMergeOutboxEnabled({ PGOS_STRUCTURAL_MERGE: 'false' }), false);
+    assert.equal(isMergeOutboxEnabled({ PGOS_STRUCTURAL_MERGE: '1' }), true);
+  });
+
+  // ── ENV-01 PGOS_AGENT_TOKEN warn (non-fatal) ───────────────────────
+  it('ENV-01: empty PGOS_AGENT_TOKEN does not fail production validation', () => {
+    assert.doesNotThrow(() =>
+      validateProductionEnv(baseEnv({ PGOS_AGENT_TOKEN: '' }), {
+        adminExists: true,
+        processEnv: {},
+      }),
     );
   });
 });

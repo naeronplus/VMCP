@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * TEST-01 / plan §11.1 — cross-machine E2E evidence driver.
+ * TEST-01 / plan §11.1 + §7.2 — cross-machine E2E evidence driver.
  *
  * Modes:
- *   --mode automated (default) — run 7 scenario validators (smokes + unit tests)
- *   --mode live — optional live API checks (requires PGOS_BASE_URL + PGOS_ADMIN_TOKEN)
+ *   --mode automated (default) — run 8 scenario validators (smokes + unit tests)
+ *   --mode live — live API checks after automated suite
+ *                 (requires PGOS_BASE_URL + PGOS_ADMIN_TOKEN)
  *
  * Writes (redacted):
  *   docs/e2e/cross-machine-e2e-<date>.log
@@ -18,6 +19,8 @@ const root = join(import.meta.dirname, '..');
 const date = new Date().toISOString().slice(0, 10);
 const e2eDir = join(root, 'docs', 'e2e');
 const logPath = join(e2eDir, `cross-machine-e2e-${date}.log`);
+/** P2.3 / plan §7.3: dedicated live evidence (verify:r6 requires LIVE PASS marker). */
+const liveLogPath = join(e2eDir, `cross-machine-e2e-live-${date}.log`);
 const summaryPath = join(e2eDir, 'cross-machine-e2e-summary.md');
 
 const mode = process.argv.includes('--mode')
@@ -143,6 +146,11 @@ const SCENARIOS = [
     name: 'Editor lock on target (stat-lock / E012)',
     run: () => bashScript('workers/tests/editor-lock-cross-machine-smoke.sh'),
   },
+  {
+    id: 8,
+    name: 'Remote merge outbox (envelope → apply → complete)',
+    run: () => bashScript('workers/tests/merge-outbox-e2e-smoke.sh'),
+  },
 ];
 
 function runLiveChecks() {
@@ -257,67 +265,103 @@ for (const sc of SCENARIOS) {
   );
 }
 
+let liveResult = null;
 if (mode === 'live') {
   log.push('\n=== Live API supplement ===\n');
   const live = await runLiveChecks();
-  log.push(redact(live.out));
-  results.push({
-    id: 8,
+  const liveBody = redact(live.out);
+  log.push(liveBody);
+  liveResult = {
+    id: 'live',
     name: 'Live orchestrator API supplement',
     ok: live.ok,
     evidence: live.ok ? 'PASS' : 'FAIL/SKIP',
-  });
+  };
+  results.push(liveResult);
+
+  // Dedicated live evidence file for verify:r6 / plan §7.3.2
+  const liveLog = [
+    `# Cross-machine E2E — LIVE evidence (TEST-01 / plan §7.3)`,
+    `Date: ${date}`,
+    `Mode: live`,
+    `Host: ${process.platform}`,
+    `PGOS_BASE_URL set: ${process.env.PGOS_BASE_URL ? 'yes' : 'no'}`,
+    '',
+    '=== Live API supplement ===',
+    '',
+    liveBody,
+    '',
+  ];
+  if (live.ok) {
+    liveLog.push('LIVE PASS');
+    liveLog.push('');
+    log.push('\nLIVE PASS\n');
+  } else {
+    liveLog.push('LIVE FAIL');
+    liveLog.push('');
+    log.push('\nLIVE FAIL\n');
+  }
+  writeFileSync(liveLogPath, liveLog.join('\n'), 'utf8');
 }
 
-const passCount = results.filter((r) => r.ok).length;
-const scenarioPass = results.filter((r) => r.id <= 7 && r.ok).length;
-const allSeven = scenarioPass === 7;
+const automated = results.filter((r) => typeof r.id === 'number');
+const scenarioPass = automated.filter((r) => r.ok).length;
+const totalAutomated = automated.length;
+const allAutomated = scenarioPass === totalAutomated && totalAutomated >= 8;
+// Core TEST-01 scenarios 1–7 (historical gate) + scenario 8 (P2 merge outbox)
+const coreSeven = automated.filter((r) => r.id >= 1 && r.id <= 7 && r.ok).length === 7;
 
 writeFileSync(logPath, log.join('\n'), 'utf8');
+
+const liveRow = liveResult
+  ? `| live | ${liveResult.name} | ${liveResult.ok ? '✅ PASS' : '❌ FAIL'} | ${liveResult.evidence} |`
+  : '';
 
 const summary = `# Cross-machine E2E — Summary (TEST-01)
 
 **Date:** ${date}  
-**Plan:** plan.md §11.1  
+**Plan:** plan.md §11.1 + §7.2 (scenario 8 remote merge outbox)  
 **Mode:** ${mode}  
-**Gate:** ${allSeven ? '**7/7 PASS**' : `**${scenarioPass}/7 PASS** — fix failures before closing TEST-01`}  
-**Log:** \`docs/e2e/cross-machine-e2e-${date}.log\` (secrets redacted)
+**Gate:** ${allAutomated ? `**${scenarioPass}/${totalAutomated} PASS**` : `**${scenarioPass}/${totalAutomated} PASS** — fix failures before closing TEST-01`}  
+**Log:** \`docs/e2e/cross-machine-e2e-${date}.log\` (secrets redacted)  
+**Live log:** ${liveResult ? `\`docs/e2e/cross-machine-e2e-live-${date}.log\`` : '_(run \`--mode live\` to produce)_'}
 
 ## Scenario results
 
 | # | Scenario | Result | Evidence |
 |---|----------|--------|----------|
-${results
-  .filter((r) => r.id <= 7)
+${automated
   .map(
     (r) =>
       `| ${r.id} | ${r.name} | ${r.ok ? '✅ PASS' : '❌ FAIL'} | ${r.evidence} |`,
   )
   .join('\n')}
+${liveRow}
 
-## Definition of Done (plan §11.1.4)
+## Definition of Done (plan §11.1.4 / §7.2 / §7.3)
 
-- [${allSeven ? 'x' : ' '}] All 7 scenarios pass (automated validators)
+- [${coreSeven ? 'x' : ' '}] All 7 core scenarios pass (automated validators)
+- [${automated.find((r) => r.id === 8)?.ok ? 'x' : ' '}] Scenario 8 remote merge outbox (envelope → apply → complete)
+- [${allAutomated ? 'x' : ' '}] All ${totalAutomated} automated scenarios pass
 - [x] Evidence committed (secrets redacted)
-- [${allSeven ? 'x' : ' '}] TEST-01 closed in \`report.md\`
+- [${liveResult?.ok ? 'x' : ' '}] Live API supplement with \`LIVE PASS\` marker (\`cross-machine-e2e-live-*.log\`)
 
 ## Re-run
 
 \`\`\`bash
-npm run verify:r6
-# or scenario driver only:
+# automated 8/8
 node scripts/run-cross-machine-e2e.mjs
-\`\`\`
-
-## Operator live sign-off (optional)
-
-Trigger \`.github/workflows/e2e_cross_machine.yml\` on a \`godot-worker\` runner with production secrets, or:
-
-\`\`\`bash
+# mandatory live (writes cross-machine-e2e-live-<date>.log)
 export PGOS_BASE_URL='https://…'
 export PGOS_ADMIN_TOKEN='…'
 node scripts/run-cross-machine-e2e.mjs --mode live
+npm run verify:r6
 \`\`\`
+
+## Operator live sign-off
+
+See **Mandatory live sign-off** in \`docs/e2e/cross-machine-e2e.md\`.  
+Workflow default: \`runLiveApi=1\` on \`.github/workflows/e2e_cross_machine.yml\`.
 
 ---
 
@@ -326,10 +370,19 @@ node scripts/run-cross-machine-e2e.mjs --mode live
 
 writeFileSync(summaryPath, summary, 'utf8');
 
-console.log(`\nE2E evidence: ${scenarioPass}/7 scenarios passed`);
+console.log(
+  `\nE2E evidence: ${scenarioPass}/${totalAutomated} automated scenarios passed`,
+);
+if (liveResult) {
+  console.log(`  live:    ${liveResult.ok ? 'PASS' : 'FAIL'}`);
+  console.log(`  liveLog: ${liveLogPath}`);
+}
 console.log(`  log:     ${logPath}`);
 console.log(`  summary: ${summaryPath}`);
 
-if (!allSeven) {
+if (!allAutomated) {
+  process.exit(1);
+}
+if (mode === 'live' && liveResult && !liveResult.ok) {
   process.exit(1);
 }

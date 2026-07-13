@@ -1,9 +1,14 @@
-# H-02: Host-side structural merge for merge_outbox remote rows
+# H-02 / H-02-WORKFLOW-SSH: Host-side structural merge for merge_outbox remote rows.
+# SSH material and callback token arrive only via secretJwe (resolve-secrets), never as bare inputs.
 name: PGOS Merge Apply
 
 on:
   workflow_dispatch:
     inputs:
+      secretJwe:
+        description: 'Dispatch JWE (callback + optional SSH + target host; never log)'
+        required: true
+        type: string
       outboxId:
         required: true
         type: string
@@ -34,7 +39,11 @@ jobs:
     timeout-minutes: 30
     env:
       PGOS_BASE_URL: ${{ secrets.PGOS_BASE_URL }}
+      # Long-lived fallback for complete callback if JWE omits callbackToken (prefer JWE).
       PGOS_SERVICE_TOKEN: ${{ secrets.PGOS_SERVICE_TOKEN }}
+      SECRET_JWE: ${{ inputs.secretJwe }}
+      # JOB_ID scopes ephemeral SSH key + token file paths in resolve-secrets / pgos-remote.
+      JOB_ID: merge-${{ inputs.outboxId }}
       OUTBOX_ID: ${{ inputs.outboxId }}
       PROJECT_ID: ${{ inputs.projectId }}
       PROJECT_ROOT: ${{ inputs.projectRoot }}
@@ -45,5 +54,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve secrets via dispatch JWE
+        run: bash workers/scripts/resolve-secrets.sh
+
       - name: Apply structural merge
-        run: bash workers/scripts/merge-apply.sh
+        run: |
+          set -euo pipefail
+          # Prefer sealed target root when present (same as cross-machine job workers).
+          if [[ -n "${TARGET_PROJECT_ROOT:-}" ]]; then
+            export PROJECT_ROOT="${TARGET_PROJECT_ROOT}"
+          fi
+          # Prefer sealed base URL when orchestrator embeds pgosBaseUrl in the JWE.
+          if [[ -n "${PGOS_BASE_URL_RESOLVED:-}" ]]; then
+            export PGOS_BASE_URL="${PGOS_BASE_URL_RESOLVED}"
+          fi
+          # Prefer sealed patch URL when present.
+          if [[ -n "${PATCH_GET_URL_RESOLVED:-}" ]]; then
+            export PATCH_GET_URL="${PATCH_GET_URL_RESOLVED}"
+          fi
+          if [[ -n "${OUTBOX_ID_RESOLVED:-}" ]]; then
+            export OUTBOX_ID="${OUTBOX_ID_RESOLVED}"
+          fi
+          if [[ -n "${REL_PATH_RESOLVED:-}" ]]; then
+            export REL_PATH="${REL_PATH_RESOLVED}"
+          fi
+          bash workers/scripts/merge-apply.sh

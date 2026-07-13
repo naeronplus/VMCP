@@ -126,5 +126,6 @@ See `packages/target-provisioner/README.md`.
 
 - Root config: [`railway.toml`](../../railway.toml)
 - Sandbox config: [`packages/sandbox-service/railway.toml`](../../packages/sandbox-service/railway.toml)
-- Env template: [`.env.example`](../../.env.example)
+- Env template (orchestrator + monorepo): [`.env.example`](../../.env.example) — includes `PGOS_SERVICE_TOKEN` (ENV-02), `PGOS_AGENT_TOKEN` / `AGENT_ROTATE_URL` (ENV-01)
+- Sandbox-only env: [`packages/sandbox-service/.env.example`](../../packages/sandbox-service/.env.example) — `SANDBOX_BACKEND=worker_thread` (ENV-03 / H-08)
 - Compose local dual-service: [`docker-compose.yml`](../../docker-compose.yml) (`SANDBOX_SERVICE_URL=http://sandbox:8090`)

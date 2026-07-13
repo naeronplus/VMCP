@@ -1,6 +1,6 @@
 # R5 Medium/Low & Hygiene — Verification Summary
 
-**Date:** 2026-07-12  
+**Date:** 2026-07-13  
 **Plan:** plan.md §10 Phase R5  
 **Scope:** M-05, L-11, DOC-02, documentation drift (§10.4)  
 **Gate:** **PASSED** — safe to proceed to R6  
@@ -22,9 +22,9 @@
 | workflow mirrors | ✅ |
 | pgos-callback-smoke | ✅ |
 | low-severity-audit tests | ✅ |
-| git origin | ⚠️ not set (operator: configure-git-remote.sh) |
+| git origin | ✅ set |
 
-Full command output: `docs/remediation/R5-baseline-2026-07-12.log` (gitignored).
+Full command output: `docs/remediation/R5-baseline-2026-07-13.log` (gitignored).
 
 ## All checks (21/21)
 
@@ -42,7 +42,7 @@ Full command output: `docs/remediation/R5-baseline-2026-07-12.log` (gitignored).
 | L-11 | README documents clone / configure-git-remote (L-11) | ✅ | README.md |
 | L-11 | low-severity-audit L-11 tests | ✅ | PASS |
 | DOC-02 | low-severity-audit DOC-02 tests | ✅ | PASS |
-| L-11 | git origin remote (optional until operator sets PGOS_GIT_ORIGIN) | ✅ | not set — run scripts/configure-git-remote.sh |
+| L-11 | git origin remote (optional until operator sets PGOS_GIT_ORIGIN) | ✅ | origin present |
 | DOC-02 | LICENSE file is MIT with copyright line | ✅ | LICENSE |
 | DOC-02 | root package.json license MIT | ✅ | package.json |
 | DOC-02 | README links to LICENSE | ✅ | README.md |

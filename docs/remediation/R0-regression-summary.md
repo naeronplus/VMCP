@@ -1,6 +1,6 @@
 # R0 Regression Verification Summary
 
-**Date:** 2026-07-12  
+**Date:** 2026-07-13  
 **Plan:** plan.md §5 Phase R0  
 **Scope:** 46 FIXED/RESOLVED findings from report.md (v1.1 remediation regression gate)  
 **Gate:** **PASSED** — safe to proceed to R1  
@@ -21,13 +21,13 @@
 
 | Metric | Expected | Actual |
 |--------|----------|--------|
-| Orchestrator test files | ≥24 | 31 |
+| Orchestrator test files | ≥24 | 32 |
 | Orchestrator tests (npm) | ≥128 | 34 |
-| Total npm tests (sum of workspace # tests) | ≥294 | 294 |
-| commit-agent Go tests (=== RUN, -count=1) | ≥35 | 50 |
+| Total npm tests (sum of workspace # tests) | ≥294 | 305 |
+| commit-agent Go tests (=== RUN, -count=1) | ≥35 | 58 |
 | mcp-server dist | exists | yes |
 
-Full command output: `docs/remediation/R0-baseline-2026-07-12.log` (gitignored).
+Full command output: `docs/remediation/R0-baseline-2026-07-13.log` (gitignored).
 
 ## Finding checklist (all FIXED IDs)
 
@@ -64,13 +64,13 @@ Full command output: `docs/remediation/R0-baseline-2026-07-12.log` (gitignored).
 | M-13 | errors.test.ts catalog completeness (E001–E021) | ✅ | errors.test.ts executed in suite |
 | M-14 | mcp-tools tests (≥10 DoD; suite green) | ✅ | mcp-tools.test.ts → 22 tests |
 | M-15 | sandbox execute + production-validation tests | ✅ | sandbox-service tests |
-| M-16 | commit-agent integration tests (≥35 Go tests) | ✅ | integration_test.go + 50 RUN |
+| M-16 | commit-agent integration tests (≥35 Go tests) | ✅ | integration_test.go + 58 RUN |
 | M-17 | FAILOVER ledger tests pass | ✅ | PASS |
 | M-18 | github mock dispatch → DISPATCH_FAILED test | ✅ | github-mock-dispatch.test.ts |
 | L-01 | heartbeat rejection returns E013 | ✅ | routes/jobs.ts |
 | L-02 | SECRET_NOT_FOUND on resolve 404 | ✅ | routes/secrets.ts |
 | L-03 | root lint chains all 5 TS workspaces | ✅ | package.json lint script |
-| L-04 | orchestrator test glob discovers all tests/**/*.test.ts | ✅ | package.json + 31 files |
+| L-04 | orchestrator test glob discovers all tests/**/*.test.ts | ✅ | package.json + 32 files |
 | L-05 | REIMPORT_* in env example | ✅ | .env.example |
 | L-06 | legacy resolve(jwe) removed; resolveDispatchJwe only | ✅ | secret-service.ts |
 | L-07 | portable timestamps (Date.now) in parity | ✅ | parity-canary.sh |
@@ -93,7 +93,7 @@ Full command output: `docs/remediation/R0-baseline-2026-07-12.log` (gitignored).
 
 ## R0.3 Definition of Done
 
-- [x] Baseline log shows all green (`R0-baseline-2026-07-12.log`)
+- [x] Baseline log shows all green (`R0-baseline-2026-07-13.log`)
 - [x] Checklist references all FIXED finding IDs (46/46 IDs green; 60/60 total checks)
 - [x] `npm run verify:r0` exits 0 — no regressions; R1 may begin
 

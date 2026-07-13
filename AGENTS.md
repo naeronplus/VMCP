@@ -70,9 +70,22 @@ Overrides applied via `POST /merge` perform structural merge when enabled (`PGOS
 3. **Script attachments** (`script = ExtResource(...)`) require **admin** role (threat model E019).
 4. Never invent new executable scripts from operator-tier patches.
 5. **Apply modes:**
-   - `local_fs` (auto when `project_root` is readable): atomic write of merged `.tscn` + override row + content hash.
-   - `outbox`: override row + `merge_outbox` pending row when the tree is not on the orchestrator. **Automatic consumer** (`pgos-merge-outbox` every 5m): applies locally when root becomes readable, otherwise dispatches `merge_apply.yml` (Tier A) with patch on S3. Host reports `POST /api/v1/merge-outbox/:id/complete` → `status=applied`. Not a manual outbox.
+   - `local_fs` (auto when `project_root` is readable on the orchestrator): atomic write of merged `.tscn` + override row + content hash.
+   - `outbox`: override row + `merge_outbox` pending row when the tree is **not** on the orchestrator. **Automatic consumer** (`pgos-merge-outbox` every 5m): applies locally when root becomes readable; otherwise **remote apply** (below). Not a manual outbox.
    - Force with `PGOS_MERGE_MODE=local_fs|outbox|auto|registry_only`.
+
+### Remote apply path (H-02 — not co-location-only)
+
+When `project_root` is unreadable on the orchestrator and project metadata includes `targetHost` (and usually `targetProvisionUrl`):
+
+1. Consumer uploads patch JSON to S3 (`projects/{id}/merge-outbox/{outboxId}/patch.json`) and presigns GET.
+2. Orchestrator builds a **dispatch JWE** (`secretJwe`) sealing `callbackToken` / service token, optional JIT `sshPrivateKey`, `targetHost`, `targetProjectRoot`, `outboxId`, `relPath`, `patchGetUrl`, `pgosBaseUrl`. **No raw private keys in workflow inputs.**
+3. Dispatches **`merge_apply.yml`** (`workflow_dispatch` only) on Tier A (`self-hosted`, `godot-worker`).
+4. Runner: `resolve-secrets.sh` → env (`TARGET_HOST`, `CALLBACK_TOKEN`, key file) → `workers/scripts/merge-apply.sh`.
+5. If `PROJECT_ROOT` is not a local directory: require `TARGET_HOST`; pipe patch via **`pgos_ssh_agent_stdin "merge-apply <project_root> <rel_path>"`** (commit-agent verb on the **target** host). Never raw `ssh`/`scp`.
+6. Agent stdout JSON `{"ok":true,"mergedHash":"…","path":"…"}` → runner `POST /api/v1/merge-outbox/:id/complete` → outbox `status=applied`.
+
+Orchestrator **never** writes remote `.tscn` files itself (PGOS never runs Godot; merge-apply is target-side only). Failures: path escape **E014**; script patches on target **E019**.
 
 ### Example
 

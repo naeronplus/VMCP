@@ -171,8 +171,49 @@ record(
     'merge.outbox_dispatched',
     'markApplied',
     'markFailed',
+    'secretJwe',
+    'buildMergeApplyDispatchEnvelope',
   ]),
   'merge-outbox-worker.ts',
+);
+
+// P1 / plan §6.4.6: extended H-02 remote path contracts
+const commitAgentMain = existsSync(join(root, 'packages/commit-agent/cmd/agent/main.go'))
+  ? read('packages/commit-agent/cmd/agent/main.go')
+  : '';
+const mergeApplyYml = read('.github/workflows/merge_apply.yml');
+record(
+  'H-02',
+  'commit-agent main.go defines merge-apply verb (H-02-MERGE-VERB)',
+  includesAll(commitAgentMain, [
+    'cmdMergeApply',
+    '"merge-apply"',
+    'handleMergeApply',
+  ]) && existsSync(join(root, 'packages/commit-agent/cmd/agent/merge_apply.go')),
+  'packages/commit-agent/cmd/agent/main.go',
+);
+
+record(
+  'H-02',
+  'merge_apply.yml secretJwe + resolve-secrets (H-02-WORKFLOW-SSH)',
+  includesAll(mergeApplyYml, [
+    'secretJwe',
+    'SECRET_JWE',
+    'resolve-secrets.sh',
+  ]),
+  'merge_apply.yml',
+);
+
+record(
+  'H-02',
+  'merge-outbox-dispatch.ts envelope module exists',
+  existsSync(
+    join(root, 'packages/orchestrator/src/services/merge-outbox-dispatch.ts'),
+  ) &&
+    read('packages/orchestrator/src/services/merge-outbox-dispatch.ts').includes(
+      'buildMergeApplyDispatchEnvelope',
+    ),
+  'merge-outbox-dispatch.ts',
 );
 
 record(
@@ -183,6 +224,8 @@ record(
     'merge-outbox',
     '/complete',
     'PATCH_GET_URL',
+    'pgos_ssh_agent_stdin',
+    'TARGET_HOST',
   ]),
   'merge-apply.sh',
 );

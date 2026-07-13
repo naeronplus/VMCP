@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# H-02: Host-side structural .tscn merge for merge_outbox remote rows.
+# H-02 / H-02-WORKFLOW-SSH: Host-side structural .tscn merge for merge_outbox remote rows.
 # Usage (env or flags):
-#   PROJECT_ROOT  — Godot project root on this host
+#   PROJECT_ROOT  — Godot project root (local on runner, or path on TARGET_HOST)
 #   REL_PATH      — logical path e.g. scenes/player.tscn
 #   PATCH_FILE    — JSON patch file (or PATCH_GET_URL to download)
-#   OUTBOX_ID     — optional; reported on success
-#   TARGET_HOST   — optional; when set and PROJECT_ROOT not local, apply via SSH
-#                   (requires commit-agent merge-apply or co-located tree)
+#   OUTBOX_ID     — optional; reported on success via complete callback
+#   TARGET_HOST   — when PROJECT_ROOT is not a local dir, apply via commit-agent merge-apply
+#   CALLBACK_TOKEN / PGOS_SERVICE_TOKEN — bearer for POST /merge-outbox/:id/complete
+#   PGOS_BASE_URL — orchestrator base URL for complete callback
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,6 +49,60 @@ if [[ ! -f "$PATCH_FILE" ]]; then
   echo "patch file missing: $PATCH_FILE" >&2
   exit 1
 fi
+
+# Extract mergedHash from agent/local JSON stdout (single line preferred).
+pgos_merge_hash_from_result() {
+  local raw="${1:-}"
+  echo "$raw" | node -e "
+let s='';
+process.stdin.on('data',d=>s+=d);
+process.stdin.on('end',()=>{
+  try {
+    const lines = s.trim().split(/\\r?\\n/).filter(Boolean);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const o = JSON.parse(lines[i]);
+        if (o && typeof o.mergedHash === 'string' && o.mergedHash) {
+          process.stdout.write(o.mergedHash);
+          return;
+        }
+      } catch { /* next line */ }
+    }
+    const o = JSON.parse(s);
+    process.stdout.write(o.mergedHash || '');
+  } catch { /* empty */ }
+});
+"
+}
+
+# POST /api/v1/merge-outbox/:id/complete with mergedHash (best-effort when env incomplete).
+pgos_report_merge_complete() {
+  local result_json="${1:-}"
+  if [[ -z "${PGOS_BASE_URL:-}" || -z "${OUTBOX_ID:-}" ]]; then
+    return 0
+  fi
+  local token="${CALLBACK_TOKEN:-${PGOS_SERVICE_TOKEN:-}}"
+  if [[ -z "$token" ]]; then
+    echo "merge-apply: complete callback skipped (no CALLBACK_TOKEN/PGOS_SERVICE_TOKEN)" >&2
+    return 0
+  fi
+  local hash
+  hash="$(pgos_merge_hash_from_result "$result_json")"
+  if [[ -z "$hash" ]]; then
+    echo "merge-apply: complete callback skipped (no mergedHash in result)" >&2
+    return 0
+  fi
+  local base="${PGOS_BASE_URL%/}"
+  curl -sS -f -X POST "${base}/api/v1/merge-outbox/${OUTBOX_ID}/complete" \
+    -H "Authorization: Bearer ${token}" \
+    -H "Content-Type: application/json" \
+    -d "{\"mergedHash\":\"${hash}\"}" \
+    || {
+      echo "merge-apply: complete callback failed for outbox=${OUTBOX_ID}" >&2
+      return 1
+    }
+  echo "merge-apply: reported complete outbox=${OUTBOX_ID}"
+}
 
 apply_local() {
   local root="$1"
@@ -91,30 +146,45 @@ if [[ -d "$PROJECT_ROOT" ]]; then
   echo "Applying merge locally under ${PROJECT_ROOT}"
   result="$(apply_local "$PROJECT_ROOT" "$REL_PATH" "$PATCH_FILE")"
   echo "$result"
-  # Optional: report completion to orchestrator
-  if [[ -n "${PGOS_BASE_URL:-}" && -n "${OUTBOX_ID:-}" && -n "${CALLBACK_TOKEN:-}${PGOS_SERVICE_TOKEN:-}" ]]; then
-    hash="$(echo "$result" | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{try{console.log(JSON.parse(s).mergedHash||'')}catch{}})")"
-    token="${CALLBACK_TOKEN:-${PGOS_SERVICE_TOKEN}}"
-    curl -sS -X POST "${PGOS_BASE_URL}/api/v1/merge-outbox/${OUTBOX_ID}/complete" \
-      -H "Authorization: Bearer ${token}" \
-      -H "Content-Type: application/json" \
-      -d "{\"mergedHash\":\"${hash}\"}" || true
-  fi
+  pgos_report_merge_complete "$result" || true
   exit 0
 fi
 
-if [[ -n "${TARGET_HOST:-}" ]]; then
-  echo "PROJECT_ROOT not local; attempting ForcedCommand merge-apply on TARGET_HOST" >&2
-  # Pipe patch JSON to remote verb (commit-agent merge-apply if installed)
-  if command -v pgos_ssh_agent_stdin >/dev/null 2>&1 || type pgos_ssh_agent_stdin >/dev/null 2>&1; then
-    if pgos_ssh_agent_stdin "merge-apply ${PROJECT_ROOT} ${REL_PATH}" <"$PATCH_FILE"; then
-      echo '{"ok":true,"mode":"remote_ssh"}'
-      exit 0
-    fi
-  fi
-  echo "remote merge-apply failed — ensure commit-agent merge-apply or co-locate project_root" >&2
+if [[ -z "${TARGET_HOST:-}" ]]; then
+  echo "project root not found and TARGET_HOST unset: $PROJECT_ROOT" >&2
   exit 1
 fi
 
-echo "project root not found and TARGET_HOST unset: $PROJECT_ROOT" >&2
-exit 1
+echo "PROJECT_ROOT not local; ForcedCommand merge-apply on TARGET_HOST" >&2
+if ! command -v pgos_ssh_agent_stdin >/dev/null 2>&1 && ! type pgos_ssh_agent_stdin >/dev/null 2>&1; then
+  echo "remote merge-apply failed — pgos_ssh_agent_stdin unavailable (source pgos-remote.sh)" >&2
+  exit 1
+fi
+
+# JOB_ID required by pgos-remote key path when using ephemeral SSH from resolve-secrets.
+if [[ -z "${JOB_ID:-}" ]]; then
+  export JOB_ID="merge-${OUTBOX_ID:-$$}"
+fi
+
+set +e
+result="$(pgos_ssh_agent_stdin "merge-apply ${PROJECT_ROOT} ${REL_PATH}" <"$PATCH_FILE" 2>"$WORK/remote.err")"
+remote_rc=$?
+set -e
+if [[ -s "$WORK/remote.err" ]]; then
+  # Agent diagnostics on stderr only — never dump PEM
+  cat "$WORK/remote.err" >&2
+fi
+if [[ "$remote_rc" -ne 0 ]]; then
+  echo "remote merge-apply failed — ensure commit-agent merge-apply or co-locate project_root (exit ${remote_rc})" >&2
+  exit 1
+fi
+
+echo "$result"
+# Prefer JSON line from agent; if empty stdout, fail closed on complete (hash required for audit).
+if [[ -z "$(echo "$result" | tr -d '[:space:]')" ]]; then
+  echo "remote merge-apply produced empty stdout" >&2
+  exit 1
+fi
+# Complete callback is required for remote success so outbox leaves "dispatched".
+pgos_report_merge_complete "$result"
+exit 0

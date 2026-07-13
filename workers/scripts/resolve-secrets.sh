@@ -90,6 +90,11 @@ emit('TARGET_HOST', secrets.targetHost);
 // L-05: orchestrator-configured reimport policy (overrides runner defaults when present)
 emit('REIMPORT_TIMEOUT_SEC', secrets.reimportTimeoutSec);
 emit('REIMPORT_MAX_RETRIES', secrets.reimportMaxRetries);
+// H-02 merge-apply: optional fields sealed in direct-dispatch JWE
+emit('OUTBOX_ID_RESOLVED', secrets.outboxId);
+emit('REL_PATH_RESOLVED', secrets.relPath);
+emit('PGOS_BASE_URL_RESOLVED', secrets.pgosBaseUrl);
+emit('PATCH_GET_URL_RESOLVED', secrets.patchGetUrl);
 // Ephemeral only for materialization below — not for GITHUB_ENV
 emit('SSH_PRIVATE_KEY_PEM', secrets.sshPrivateKey);
 emit('PRESIGN_STAGING_PUT', urls.stagingPut);
@@ -158,6 +163,10 @@ if [[ -n "${GITHUB_ENV:-}" ]]; then
     echo "TARGET_HOST=${TARGET_HOST:-}"
     echo "REIMPORT_TIMEOUT_SEC=${REIMPORT_TIMEOUT_SEC:-}"
     echo "REIMPORT_MAX_RETRIES=${REIMPORT_MAX_RETRIES:-}"
+    echo "OUTBOX_ID_RESOLVED=${OUTBOX_ID_RESOLVED:-}"
+    echo "REL_PATH_RESOLVED=${REL_PATH_RESOLVED:-}"
+    echo "PGOS_BASE_URL_RESOLVED=${PGOS_BASE_URL_RESOLVED:-}"
+    echo "PATCH_GET_URL_RESOLVED=${PATCH_GET_URL_RESOLVED:-}"
     echo "PRESIGN_STAGING_PUT=${PRESIGN_STAGING_PUT:-}"
     echo "PRESIGN_STAGING_GET=${PRESIGN_STAGING_GET:-}"
     echo "PRESIGN_STAGING_ARCHIVE_PUT=${PRESIGN_STAGING_ARCHIVE_PUT:-}"
